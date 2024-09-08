@@ -20,7 +20,7 @@ echo "Setting ownership and permissions for /var/www/html/..."
 sudo chown -R www-data:www-data /var/www/html/
 sudo chmod -R 755 /var/www/html/
 
-# ---- Configure network statistics using nethogs ----
+# ---- Install and Configure Nethogs ----
 
 # Install nethogs if not already installed
 if ! command -v nethogs &> /dev/null
@@ -59,7 +59,6 @@ echo "Route::get('/network-stats', function () { return response()->json(shell_e
 cat > /var/www/html/app/resources/js/components/NetworkStats.js <<EOF
 import React, { useState, useEffect } from 'react';
 import { Card, CardHeader, CardContent } from '@/components/ui/card';
-import { ArrowUpRight, ArrowDownRight, Activity } from 'lucide-react';
 
 const NetworkStats = () => {
     const [stats, setStats] = useState({ data: 'Loading...' });
@@ -108,6 +107,25 @@ function Dashboard() {
   );
 }
 EOF
+
+# ---- Build and Refresh Frontend (React) ----
+cd /var/www/html/app
+
+# Ensure npm is installed
+if ! command -v npm &> /dev/null
+then
+    echo "npm is not installed. Installing npm..."
+    sudo apt-get install -y npm
+fi
+
+# Install dependencies and build the project
+echo "Installing npm dependencies and building frontend..."
+npm install
+npm run build
+
+# ---- Test the API endpoint ----
+echo "Testing API endpoint to check network stats..."
+curl http://localhost/api/network-stats
 
 # Final message
 echo "Setup complete. The network statistics will be displayed in the Online User section."
