@@ -3,6 +3,28 @@
 # نصب نیازمندی‌ها
 apt-get update && apt-get install -y php curl
 
+# Check if directory exists, if not create it
+if [ ! -d "/var/www/html/app/Scripts" ]; then
+  echo "Directory /var/www/html/app/Scripts not found. Creating it..."
+  sudo mkdir -p /var/www/html/app/Scripts
+fi
+
+# Check if get_network_stats.php file exists, if not create a placeholder
+if [ ! -f "/var/www/html/app/Scripts/get_network_stats.php" ]; then
+  echo "File get_network_stats.php not found. Creating a placeholder..."
+  sudo touch /var/www/html/app/Scripts/get_network_stats.php
+  echo "<?php // Placeholder for get_network_stats.php ?>" | sudo tee /var/www/html/app/Scripts/get_network_stats.php > /dev/null
+fi
+
+# Set ownership and permissions for the files
+echo "Setting ownership and permissions for /var/www/html/..."
+sudo chown -R www-data:www-data /var/www/html/
+sudo chmod -R 755 /var/www/html/
+
+# Output status
+echo "Setup complete. Directory and files are now set up correctly."
+
+
 # تنظیمات اولیه شبکه برای گرفتن سرعت و میزان مصرف
 cat > /var/www/html/app/Scripts/get_network_stats.php <<EOF
 <?php
