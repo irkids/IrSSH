@@ -1,270 +1,199 @@
 #!/bin/bash
 
-# Function to check if the script is running as root
-function check_root() {
-    if [ "$EUID" -ne 0 ]; then
-        echo "Please run this script as root."
-        exit
-    fi
-}
+# Basic details setup
+echo "Enter the administrator username for SSH panel:"
+read admin_user
+echo "Enter the administrator password for SSH panel:"
+read admin_password
 
-# Check if running as root
-check_root
+# Ask for server IP or domain once
+echo "Enter the IP address or domain for the server:"
+read server_address
 
-# Prompt for required inputs
-read -p "Enter Server Administrator Username: " admin_user
-read -sp "Enter Server Administrator Password: " admin_pass
-echo
-read -p "Enter your Server IP address or Domain: " server_ip
-read -p "Enter your Subdomain: " subdomain
-read -p "Enter Badvpn UDPGW Port (e.g., 7300): " badvpn_port
+# Ask for Badvpn port at the start
+echo "Enter the Badvpn port for voice and video calls (default: 7300):"
+read badvpn_port
+badvpn_port=${badvpn_port:-7300}
 
-# Update and install necessary packages
-echo "Updating system and installing dependencies..."
-sudo apt update
-sudo apt install -y python3 python3-pip mysql-server nginx openssl wget curl
+# Store admin credentials and server details for later use
+echo "Admin Username: $admin_user" > /etc/ssh-panel/admin.conf
+echo "Admin Password: $admin_password" >> /etc/ssh-panel/admin.conf
+echo "Server Address: $server_address" >> /etc/ssh-panel/admin.conf
+echo "Badvpn Port: $badvpn_port" >> /etc/ssh-panel/admin.conf
 
-# Install Badvpn (UDPGW)
-echo "Installing Badvpn (UDPGW)..."
-wget -N https://raw.githubusercontent.com/opiran-club/VPS-Optimizer/main/Install/udpgw.sh && bash udpgw.sh
+# System and dependency setup
+echo "Installing necessary packages..."
+apt-get update
+apt-get install -y nginx python3 python3-pip mariadb-server
 
-# Install Flask and MySQL Connector for Python
-echo "Installing Flask and MySQL connector..."
-sudo pip3 install flask mysql-connector-python paramiko
+# Set up NGINX and the database
+systemctl start nginx
+systemctl enable nginx
 
-# Create the SSH user management Python script
-echo "Setting up SSH user management script..."
-cat <<EOF > /opt/ssh_user_management.py
-from flask import Flask, render_template, request, redirect, flash
-import paramiko
-import mysql.connector
-from mysql.connector import Error
-import os
+# Setting up the Python environment
+pip3 install flask gunicorn pymysql
+
+# Python Flask SSH Panel Web App Setup
+echo "Setting up the SSH panel..."
+
+cat << EOF > /var/www/ssh-panel/app.py
+from flask import Flask, render_template, request, redirect, url_for
+import pymysql
 
 app = Flask(__name__)
-app.secret_key = 'your_secret_key'
 
-# MySQL Database Configuration
-DB_CONFIG = {
-    'host': 'localhost',
-    'database': 'ssh_user_management',
-    'user': 'your_mysql_user',
-    'password': 'your_mysql_password'
-}
+# Database connection
+def connect_db():
+    return pymysql.connect(host='localhost', user='root', password='', db='ssh_panel')
 
-# SSH Server Configuration
-SSH_CONFIG = {
-    'hostname': '$server_ip',
-    'port': 22,
-    'ssh_user': 'your_ssh_user',
-    'ssh_password': 'your_ssh_password'
-}
-
-# Administrator credentials
-admin_username = os.getenv('ADMIN_USERNAME')
-admin_password = os.getenv('ADMIN_PASSWORD')
-
-# Function to create a new SSH user on the remote machine
-def create_ssh_user(new_username, new_password):
-    try:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(SSH_CONFIG['hostname'], port=SSH_CONFIG['port'], 
-                       username=SSH_CONFIG['ssh_user'], password=SSH_CONFIG['ssh_password'])
-        
-        # Create a new user on the remote machine
-        command = f'sudo useradd -m -p $(openssl passwd -1 {new_password}) {new_username}'
-        stdin, stdout, stderr = client.exec_command(command)
-        error = stderr.read().decode('utf-8')
-        
-        if error:
-            return False, error
-        else:
-            return True, None
-    except Exception as e:
-        return False, str(e)
-    finally:
-        client.close()
-
-# Function to store new user in MySQL database
-def add_user_to_db(username):
-    try:
-        connection = mysql.connector.connect(**DB_CONFIG)
-        cursor = connection.cursor()
-        query = "INSERT INTO users (username, ssh_user) VALUES (%s, %s)"
-        cursor.execute(query, (username, 'ssh_user'))  
-        connection.commit()
-        cursor.close()
-        connection.close()
-    except Error as e:
-        print(f"Error connecting to MySQL: {str(e)}")
-
-# Route to display registered users
 @app.route('/')
 def index():
-    connection = mysql.connector.connect(**DB_CONFIG)
-    cursor = connection.cursor()
+    return render_template('index.html')
+
+@app.route('/login', methods=['POST'])
+def login():
+    username = request.form['username']
+    password = request.form['password']
+    if username == '$admin_user' and password == '$admin_password':
+        return redirect(url_for('dashboard'))
+    else:
+        return "Invalid credentials"
+
+@app.route('/dashboard')
+def dashboard():
+    # Show registered users
+    conn = connect_db()
+    cursor = conn.cursor()
     cursor.execute("SELECT * FROM users")
     users = cursor.fetchall()
-    cursor.close()
-    connection.close()
-    return render_template('index.html', users=users)
+    conn.close()
+    return render_template('dashboard.html', users=users)
 
-# Route for the login page
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        if username == admin_username and password == admin_password:
-            return redirect('/')
-        else:
-            flash('Invalid credentials', 'danger')
-            return redirect('/login')
-    return render_template('login.html')
-
-# Route to show user registration form and handle form submissions
-@app.route('/register', methods=['GET', 'POST'])
+@app.route('/register', methods=['POST'])
 def register():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        
-        success, error = create_ssh_user(username, password)
-        if success:
-            add_user_to_db(username)
-            flash('User created successfully!', 'success')
-            return redirect('/')
-        else:
-            flash(f"Error creating user: {error}", 'danger')
+    username = request.form['username']
+    expiration = request.form['expiration']
+    bandwidth_limit = request.form['bandwidth']
     
-    return render_template('register.html')
+    # Register the user in the database
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO users (username, expiration, bandwidth) VALUES (%s, %s, %s)", (username, expiration, bandwidth_limit))
+    conn.commit()
+    conn.close()
+
+    return redirect(url_for('dashboard'))
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000)
 EOF
 
-# Create HTML templates directory
-echo "Creating HTML templates..."
-mkdir -p /opt/templates
+# Create templates for the panel
+mkdir -p /var/www/ssh-panel/templates
 
-# Create index.html
-cat <<EOF > /opt/templates/index.html
+# HTML Templates
+cat << EOF > /var/www/ssh-panel/templates/index.html
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SSH User Management</title>
-    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <title>SSH Panel - Login</title>
 </head>
 <body>
-    <div class="container mt-5">
-        <h1>Registered SSH Users</h1>
-        <a href="/register" class="btn btn-primary mb-3">Register New User</a>
-        <table class="table table-striped">
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Username</th>
-                    <th>SSH User</th>
-                    <th>Created At</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for user in users %}
-                <tr>
-                    <td>{{ user[0] }}</td>
-                    <td>{{ user[1] }}</td>
-                    <td>{{ user[2] }}</td>
-                    <td>{{ user[3] }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
+    <h2>Login to SSH Panel</h2>
+    <form action="/login" method="POST">
+        Username: <input type="text" name="username"><br>
+        Password: <input type="password" name="password"><br>
+        <input type="submit" value="Login">
+    </form>
 </body>
 </html>
 EOF
 
-# Create register.html
-cat <<EOF > /opt/templates/register.html
+cat << EOF > /var/www/ssh-panel/templates/dashboard.html
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Register SSH User</title>
-    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <title>SSH Panel - Dashboard</title>
 </head>
 <body>
-    <div class="container mt-5">
-        <h1>Register New SSH User</h1>
-        <form method="POST">
-            <div class="form-group">
-                <label for="username">Username</label>
-                <input type="text" class="form-control" id="username" name="username" required>
-            </div>
-            <div class="form-group">
-                <label for="password">Password</label>
-                <input type="password" class="form-control" id="password" name="password" required>
-            </div>
-            <button type="submit" class="btn btn-primary">Register</button>
-        </form>
-    </div>
+    <h2>Registered Users</h2>
+    <table border="1">
+        <tr>
+            <th>Username</th>
+            <th>Expiration</th>
+            <th>Bandwidth Limit</th>
+        </tr>
+        {% for user in users %}
+        <tr>
+            <td>{{ user[0] }}</td>
+            <td>{{ user[1] }}</td>
+            <td>{{ user[2] }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+
+    <h2>Register New User</h2>
+    <form action="/register" method="POST">
+        Username: <input type="text" name="username"><br>
+        Expiration Date: <input type="date" name="expiration"><br>
+        Bandwidth Limit: <input type="text" name="bandwidth"><br>
+        <input type="submit" value="Register">
+    </form>
 </body>
 </html>
 EOF
 
-# Create login.html
-cat <<EOF > /opt/templates/login.html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Login</title>
-    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
-</head>
-<body>
-    <div class="container mt-5">
-        <h1>Admin Login</h1>
-        <form method="POST">
-            <div class="form-group">
-                <label for="username">Username</label>
-                <input type="text" class="form-control" id="username" name="username" required>
-            </div>
-            <div class="form-group">
-                <label for="password">Password</label>
-                <input type="password" class="form-control" id="password" name="password" required>
-            </div>
-            <button type="submit" class="btn btn-primary">Login</button>
-        </form>
-    </div>
-</body>
-</html>
+# Database setup for user management
+echo "Setting up the MySQL database..."
+mysql -e "CREATE DATABASE ssh_panel"
+mysql -e "CREATE TABLE ssh_panel.users (username VARCHAR(50), expiration DATE, bandwidth VARCHAR(20))"
+
+# Configure Gunicorn for production
+echo "Configuring Gunicorn..."
+cat << EOF > /etc/systemd/system/gunicorn.service
+[Unit]
+Description=Gunicorn instance to serve SSH Panel
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/ssh-panel
+ExecStart=/usr/bin/gunicorn --workers 3 --bind unix:ssh-panel.sock -m 007 app:app
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
-# Set environment variables for the admin credentials
-export ADMIN_USERNAME=$admin_user
-export ADMIN_PASSWORD=$admin_pass
+# Start and enable the Gunicorn service
+systemctl start gunicorn
+systemctl enable gunicorn
 
-# Configure MySQL database
-echo "Configuring MySQL database..."
-sudo mysql -u root -e "CREATE DATABASE ssh_user_management;"
-sudo mysql -u root -e "CREATE USER 'your_mysql_user'@'localhost' IDENTIFIED BY 'your_mysql_password';"
-sudo mysql -u root -e "GRANT ALL PRIVILEGES ON ssh_user_management.* TO 'your_mysql_user'@'localhost';"
-sudo mysql -u root -e "FLUSH PRIVILEGES;"
+# Configure NGINX to serve the panel
+cat << EOF > /etc/nginx/sites-available/ssh-panel
+server {
+    listen 80;
+    server_name $server_address;
 
-# Create the users table
-sudo mysql -u root ssh_user_management -e "
-CREATE TABLE users (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    username VARCHAR(100) NOT NULL,
-    ssh_user VARCHAR(100),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);"
+    location / {
+        include proxy_params;
+        proxy_pass http://unix:/var/www/ssh-panel/ssh-panel.sock;
+    }
+}
+EOF
 
-# Start the Flask app
-echo "Starting SSH user management web app..."
-sudo FLASK_APP=/opt/ssh_user_management.py flask run --host=0.0.0.0 --port=8080
+# Enable NGINX configuration
+ln -s /etc/nginx/sites-available/ssh-panel /etc/nginx/sites-enabled
+nginx -t && systemctl restart nginx
+
+# Badvpn Installation (Silent)
+echo "Installing and configuring Badvpn..."
+wget -N https://raw.githubusercontent.com/opiran-club/VPS-Optimizer/main/Install/udpgw.sh
+bash udpgw.sh $badvpn_port
+
+# Completion message
+echo "Installation complete! Access the SSH Panel at http://$server_address"
