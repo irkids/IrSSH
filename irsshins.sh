@@ -1,9 +1,32 @@
 #!/bin/bash
 
+# Function to check if the script is running as root
+function check_root() {
+    if [ "$EUID" -ne 0 ]; then
+        echo "Please run this script as root."
+        exit
+    fi
+}
+
+# Check if running as root
+check_root
+
+# Prompt for required inputs
+read -p "Enter Server Administrator Username: " admin_user
+read -sp "Enter Server Administrator Password: " admin_pass
+echo
+read -p "Enter your Server IP address or Domain: " server_ip
+read -p "Enter your Subdomain: " subdomain
+read -p "Enter Badvpn UDPGW Port (e.g., 7300): " badvpn_port
+
 # Update and install necessary packages
 echo "Updating system and installing dependencies..."
 sudo apt update
-sudo apt install -y python3 python3-pip mysql-server nginx openssl
+sudo apt install -y python3 python3-pip mysql-server nginx openssl wget curl
+
+# Install Badvpn (UDPGW)
+echo "Installing Badvpn (UDPGW)..."
+wget -N https://raw.githubusercontent.com/opiran-club/VPS-Optimizer/main/Install/udpgw.sh && bash udpgw.sh
 
 # Install Flask and MySQL Connector for Python
 echo "Installing Flask and MySQL connector..."
@@ -31,7 +54,7 @@ DB_CONFIG = {
 
 # SSH Server Configuration
 SSH_CONFIG = {
-    'hostname': 'your_ssh_server_ip',
+    'hostname': '$server_ip',
     'port': 22,
     'ssh_user': 'your_ssh_user',
     'ssh_password': 'your_ssh_password'
@@ -222,14 +245,9 @@ cat <<EOF > /opt/templates/login.html
 </html>
 EOF
 
-# Prompt for the admin username and password
-read -p "Enter the admin username: " admin_username
-read -sp "Enter the admin password: " admin_password
-echo
-
 # Set environment variables for the admin credentials
-export ADMIN_USERNAME=$admin_username
-export ADMIN_PASSWORD=$admin_password
+export ADMIN_USERNAME=$admin_user
+export ADMIN_PASSWORD=$admin_pass
 
 # Configure MySQL database
 echo "Configuring MySQL database..."
@@ -247,29 +265,6 @@ CREATE TABLE users (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );"
 
-# NGINX configuration
-echo "Configuring NGINX..."
-sudo cat <<EOF > /etc/nginx/sites-available/ssh_management
-server {
-    listen 80;
-    server_name your_domain_or_ip;
-
-    location / {
-        proxy_pass http://127.0.0.1:5000;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
-
-sudo ln -s /etc/nginx/sites-available/ssh_management /etc/nginx/sites-enabled/
-sudo systemctl restart nginx
-
-# Run the Flask app
-echo "Starting the Flask app..."
-cd /opt
-sudo ADMIN_USERNAME=$admin_username ADMIN_PASSWORD=$admin_password python3 ssh_user_management.py &
-
-echo "SSH User Management system is now running!"
+# Start the Flask app
+echo "Starting SSH user management web app..."
+sudo FLASK_APP=/opt/ssh_user_management.py flask run --host=0.0.0.0 --port=8080
