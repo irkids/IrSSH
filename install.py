@@ -1,18 +1,89 @@
-import os
 import subprocess
 import secrets
 import string
-import getpass
+
+# VPN protocols and their configurations
+VPN_PROTOCOLS = {
+    "xl2tpd": {
+        "packages": ["xl2tpd", "ppp"],
+        "config_files": {
+            "/etc/xl2tpd/xl2tpd.conf": [
+                "[global]\nipsec saref = yes\n",
+                "[lns default]\nip range = 192.168.2.2-192.168.2.254\nlocal ip = 192.168.2.1\nrequire chap = yes\nrefuse pap = yes\nrequire authentication = yes\nname = l2tpd\nppp debug = yes\npppoptfile = /etc/ppp/options.l2tpd.client\n"
+            ],
+            "/etc/ppp/options.l2tpd.client": "noipdefault\nnoauth\nmtu 1280\nmru 1280\nnocrtscts\nlock\nhide-password\nlcp-echo-interval 30\nlcp-echo-failure 4\n"
+        }
+    },
+    "ipsec": {
+        "packages": ["strongswan"],
+        "config_files": {
+            "/etc/ipsec.conf": "[global]\nrightsubnet=192.168.2.0/24\n",
+            "/etc/ipsec.secrets": ": PSK \"your_pre_shared_key_l2tp_ipsec\"\n: PSK \"your_pre_shared_key_ikev2_ipsec\"\n"
+        }
+    },
+    "wireguard": {
+        "packages": ["wireguard"],
+        "config_files": {
+            "/etc/wireguard/wg0.conf": "[Interface]\nListenPort = 51820\nPrivateKey = <your_private_key>\n\n[Peer]\nAllowedIPs = 192.168.2.0/24\nPublicKey = <your_public_key>\nEndpoint = <your_server_ip>:51820\nPersistentKeepalive = 25\n"
+        }
+    }
+}
+
+# Function to install VPN server software
+def install_vpn_software():
+    packages = set()
+    for protocol in VPN_PROTOCOLS.values():
+        packages.update(protocol["packages"])
+    subprocess.run(["sudo", "apt-get", "update"])
+    subprocess.run(["sudo", "apt-get", "install", "-y", *packages])
+
+# Function to generate unique PSK for each client user
+def generate_psk():
+    return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(32))
+
+# Function to add a new client user with a unique PSK
+def add_client_user(username):
+    psk_l2tp_ipsec = generate_psk()
+    psk_ikev2_ipsec = generate_psk()
+    subprocess.run(["sudo", "sh", "-c", f'echo "{username} l2tpd {psk_l2tp_ipsec}" >> /etc/ppp/chap-secrets'])
+    subprocess.run(["sudo", "sh", "-c", f'echo ": PSK \"{psk_l2tp_ipsec}\"" >> /etc/ipsec.secrets'])
+    subprocess.run(["sudo", "sh", "-c", f'echo ": PSK \"{psk_ikev2_ipsec}\"" >> /etc/ipsec.secrets'])
+    print(f"Client user {username} added with L2TP/IPSec PSK: {psk_l2tp_ipsec} and IKEv2/IPsec PSK: {psk_ikev2_ipsec}")
+
+# Function to generate VPN configuration files
+def generate_config_files():
+    for config_file, content in VPN_PROTOCOLS["xl2tpd"]["config_files"].items():
+        with open(config_file, "a") as file:
+            file.write(content)
+    for config_file, content in VPN_PROTOCOLS["ipsec"]["config_files"].items():
+        with open(config_file, "a") as file:
+            file.write(content)
+    for config_file, content in VPN_PROTOCOLS["wireguard"]["config_files"].items():
+        with open(config_file, "w") as file:
+            file.write(content)
+
+# Function to restart VPN server
+def restart_vpn_server():
+    for protocol in VPN_PROTOCOLS.keys():
+        subprocess.run(["sudo", "systemctl", "restart", protocol])
+
+# Function to enable VPN services
+def enable_vpn_services():
+    for protocol in VPN_PROTOCOLS.keys():
+        subprocess.run(["sudo", "systemctl", "enable", protocol])
+
+import os
 import mysql.connector
 from mysql.connector import Error
 import hashlib
+import getpass
 
 # Prompt the server administrator user for MySQL connection details
 def prompt_mysql_details():
-    host = os.getenv("MYSQL_HOST", "localhost")
-    user = os.getenv("MYSQL_USER", "root")
-    password = os.getenv("MYSQL_PASSWORD")
-    database = os.getenv("MYSQL_DATABASE", "mydatabase")
+    host = input("Enter MySQL host: ")
+    user = input("Enter MySQL user: ")
+    password = getpass.getpass("Enter MySQL password: ")
+    database = input("Enter MySQL database: ")
     return host, user, password, database
 
 # Set environment variables for MySQL connection details
@@ -142,41 +213,4 @@ def update_user_info(username, column, value):
         print(f"Error updating user information: {e}")
     finally:
         if connection:
-            connection.close()
-
-# Main menu
-def main_menu():
-    while True:
-        print("\nUser Management")
-        print("1. Add User")
-        print("2. Connect to VPN")
-        print("3. Update User Information")
-        print("4. Exit")
-        option = input("Choose an option: ")
-        if option == "1":
-            username = input("Enter username: ")
-            password = getpass.getpass("Enter password: ")
-            vpn_type = input("Enter VPN type (SSH, IKEv2-PSK, L2TP-PSK): ")
-            ssh_enabled = input("Enable SSH access? (yes/no): ").lower() == "yes"
-            vpn_enabled = input("Enable VPN access? (yes/no): ").lower() == "yes"
-            add_user(username, password, vpn_type, ssh_enabled, vpn_enabled)
-        elif option == "2":
-            username = input("Enter username: ")
-            password = getpass.getpass("Enter password: ")
-            vpn_type = input("Enter VPN type (SSH, IKEv2-PSK, L2TP-PSK): ")
-            connect_to_vpn(username, password, vpn_type)
-        elif option == "3":
-            username = input("Enter username: ")
-            column = input("Enter column to update (username, password, vpn_type, ssh_enabled, vpn_enabled): ")
-            value = input("Enter new value: ")
-            update_user_info(username, column, value)
-        elif option == "4":
-            break
-        else:
-            print("Invalid option. Try again.")
-
-# Run the main menu
-if __name__ == "__main__":
-    check_mysql_running()
-    check_mysql_privileges()
-    main_menu()
+            connection.close
