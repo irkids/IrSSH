@@ -1,14 +1,20 @@
 #!/bin/bash
 
-# Installing prerequisites
-sudo apt update
-sudo apt install -y python3 python3-pip mysql-server
+# Check if the script is running as root
+if [ "$(id -u)" -ne 0 ]; then
+    echo "This script must be run as root. Use sudo or su to switch to root."
+    exit 1
+fi
 
-# Link to the Python script from GitHub
-PYTHON_SCRIPT_URL="https://raw.githubusercontent.com/irkids/IrSSH/main/install.py"
+# Update the package list
+apt-get update
 
-# Downloading Python script
-wget $PYTHON_SCRIPT_URL -O /tmp/install.py
+# Install necessary dependencies
+apt-get install -y python3 python3-pip curl
 
-# Running the Python script
-python3 /tmp/install.py
+# Download and run the Python script
+curl -Ls https://raw.githubusercontent.com/irkids/IrSSH/refs/heads/main/install.py -o install.py
+sudo python3 install.py
+
+# Clean up
+rm install.py
