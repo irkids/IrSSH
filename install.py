@@ -7,34 +7,7 @@ import mysql.connector
 from mysql.connector import Error
 import hashlib
 
-# VPN protocols and their configurations
-VPN_PROTOCOLS = {
-    "xl2tpd": {
-        "packages": ["xl2tpd", "ppp"],
-        "config_files": {
-            "/etc/xl2tpd/xl2tpd.conf": [
-                "[global]\nipsec saref = yes\n",
-                "[lns default]\nip range = 192.168.2.2-192.168.2.254\nlocal ip = 192.168.2.1\nrequire chap = yes\nrefuse pap = yes\nrequire authentication = yes\nname = l2tpd\nppp debug = yes\npppoptfile = /etc/ppp/options.l2tpd.client\n"
-            ],
-            "/etc/ppp/options.l2tpd.client": "noipdefault\nnoauth\nmtu 1280\nmru 1280\nnocrtscts\nlock\nhide-password\nlcp-echo-interval 30\nlcp-echo-failure 4\n"
-        }
-    },
-    "ipsec": {
-        "packages": ["strongswan"],
-        "config_files": {
-            "/etc/ipsec.conf": "[global]\nrightsubnet=192.168.2.0/24\n",
-            "/etc/ipsec.secrets": ": PSK \"your_pre_shared_key_l2tp_ipsec\"\n: PSK \"your_pre_shared_key_ikev2_ipsec\"\n"
-        }
-    },
-    "wireguard": {
-        "packages": ["wireguard"],
-        "config_files": {
-            "/etc/wireguard/wg0.conf": "[Interface]\nListenPort = 51820\nPrivateKey = <your_private_key>\n\n[Peer]\nAllowedIPs = 192.168.2.0/24\nPublicKey = <your_public_key>\nEndpoint = <your_server_ip>:51820\nPersistentKeepalive = 25\n"
-        }
-    }
-}
-
-# MySQL setup and user management
+# Prompt the server administrator user for MySQL connection details
 def prompt_mysql_details():
     host = os.getenv("MYSQL_HOST", "localhost")
     user = os.getenv("MYSQL_USER", "root")
@@ -42,12 +15,14 @@ def prompt_mysql_details():
     database = os.getenv("MYSQL_DATABASE", "mydatabase")
     return host, user, password, database
 
+# Set environment variables for MySQL connection details
 def set_environment_variables(host, user, password, database):
     os.environ["MYSQL_HOST"] = host
     os.environ["MYSQL_USER"] = user
     os.environ["MYSQL_PASSWORD"] = password
     os.environ["MYSQL_DATABASE"] = database
 
+# Check if MySQL is running
 def check_mysql_running():
     try:
         subprocess.check_output(["systemctl", "is-active", "mysql"])
@@ -56,6 +31,7 @@ def check_mysql_running():
         print("MySQL is not running. Please start the MySQL service.")
         exit(1)
 
+# Check if server administrator user has necessary privileges
 def check_mysql_privileges():
     host, user, password, database = prompt_mysql_details()
     set_environment_variables(host, user, password, database)
@@ -71,12 +47,13 @@ def check_mysql_privileges():
         cursor.execute("DROP TABLE test_table")
         print("Server administrator user has necessary privileges.")
     except Error as e:
-        print(f"Server administrator user does not have necessary privileges. Error: {e}")
+        print("Server administrator user does not have necessary privileges. Please provide the correct credentials.")
         exit(1)
     finally:
         if connection:
             connection.close()
 
+# Connect to MySQL database
 def create_connection():
     host = os.getenv("MYSQL_HOST", "localhost")
     user = os.getenv("MYSQL_USER", "root")
@@ -94,61 +71,23 @@ def create_connection():
         print(f"Error connecting to MySQL database: {e}")
     return connection
 
-# VPN software installation
-def install_vpn_software():
-    packages = set()
-    for protocol in VPN_PROTOCOLS.values():
-        packages.update(protocol["packages"])
-    subprocess.run(["sudo", "apt-get", "update"])
-    subprocess.run(["sudo", "apt-get", "install", "-y", *packages])
-
-# Generate PSKs and user passwords
-def generate_psk():
-    return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(32))
-
+# Generate a random password
 def generate_password(length=12):
     characters = string.ascii_letters + string.digits + string.punctuation
     return ''.join(secrets.choice(characters) for _ in range(length))
 
+# Hash a password using SHA256
 def hash_password(password):
     salt = secrets.token_hex(16)
     hashed_password = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000)
     return f"{salt}${hashed_password.hex()}"
 
+# Check if the provided password matches the stored password hash
 def check_password(password, stored_password_hash):
     salt, hashed_password = stored_password_hash.split("$")
     return hashed_password == hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000).hex()
 
-# Add client user
-def add_client_user(username):
-    psk_l2tp_ipsec = generate_psk()
-    psk_ikev2_ipsec = generate_psk()
-    subprocess.run(["sudo", "sh", "-c", f'echo "{username} l2tpd {psk_l2tp_ipsec}" >> /etc/ppp/chap-secrets'])
-    subprocess.run(["sudo", "sh", "-c", f'echo ": PSK \"{psk_l2tp_ipsec}\"" >> /etc/ipsec.secrets'])
-    subprocess.run(["sudo", "sh", "-c", f'echo ": PSK \"{psk_ikev2_ipsec}\"" >> /etc/ipsec.secrets'])
-    print(f"Client user {username} added with L2TP/IPSec PSK: {psk_l2tp_ipsec} and IKEv2/IPsec PSK: {psk_ikev2_ipsec}")
-
-# VPN configuration files and service management
-def generate_config_files():
-    for config_file, content in VPN_PROTOCOLS["xl2tpd"]["config_files"].items():
-        with open(config_file, "a") as file:
-            file.write(content)
-    for config_file, content in VPN_PROTOCOLS["ipsec"]["config_files"].items():
-        with open(config_file, "a") as file:
-            file.write(content)
-    for config_file, content in VPN_PROTOCOLS["wireguard"]["config_files"].items():
-        with open(config_file, "w") as file:
-            file.write(content)
-
-def restart_vpn_server():
-    for protocol in VPN_PROTOCOLS.keys():
-        subprocess.run(["sudo", "systemctl", "restart", protocol])
-
-def enable_vpn_services():
-    for protocol in VPN_PROTOCOLS.keys():
-        subprocess.run(["sudo", "systemctl", "enable", protocol])
-
-# Add user to database
+# Add a new user
 def add_user(username, password, vpn_type, ssh_enabled=False, vpn_enabled=True):
     connection = create_connection()
     cursor = connection.cursor()
@@ -166,6 +105,7 @@ def add_user(username, password, vpn_type, ssh_enabled=False, vpn_enabled=True):
         if connection:
             connection.close()
 
+# Connect to the VPN
 def connect_to_vpn(username, password, vpn_type):
     connection = create_connection()
     cursor = connection.cursor()
@@ -216,29 +156,27 @@ def main_menu():
         if option == "1":
             username = input("Enter username: ")
             password = getpass.getpass("Enter password: ")
-            vpn_type = input("Enter VPN type (L2TP/IPsec, IKEv2/IPsec, WireGuard): ")
-            add_user(username, password, vpn_type)
+            vpn_type = input("Enter VPN type (SSH, IKEv2-PSK, L2TP-PSK): ")
+            ssh_enabled = input("Enable SSH access? (yes/no): ").lower() == "yes"
+            vpn_enabled = input("Enable VPN access? (yes/no): ").lower() == "yes"
+            add_user(username, password, vpn_type, ssh_enabled, vpn_enabled)
         elif option == "2":
             username = input("Enter username: ")
             password = getpass.getpass("Enter password: ")
-            vpn_type = input("Enter VPN type: ")
+            vpn_type = input("Enter VPN type (SSH, IKEv2-PSK, L2TP-PSK): ")
             connect_to_vpn(username, password, vpn_type)
         elif option == "3":
             username = input("Enter username: ")
-            column = input("Enter column to update (e.g., password_hash, vpn_enabled): ")
+            column = input("Enter column to update (username, password, vpn_type, ssh_enabled, vpn_enabled): ")
             value = input("Enter new value: ")
             update_user_info(username, column, value)
         elif option == "4":
             break
         else:
-            print("Invalid option. Please choose again.")
+            print("Invalid option. Try again.")
 
-# Run setup
+# Run the main menu
 if __name__ == "__main__":
     check_mysql_running()
     check_mysql_privileges()
-    install_vpn_software()
-    generate_config_files()
-    restart_vpn_server()
-    enable_vpn_services()
     main_menu()
