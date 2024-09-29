@@ -1,6 +1,12 @@
 #!/bin/bash
 
-# Quiet typing mode for introduction
+# Quiet typing mode for introduction (fallback if 'pv' is not installed)
+if ! command -v pv &> /dev/null; then
+    echo "pv command not found. Installing pv..."
+    apt-get install -y pv
+fi
+
+# Introduction
 echo -n "I hope the moments you use IRANSSH have been useful for you" | pv -qL 20
 sleep 1
 echo ""
@@ -8,7 +14,7 @@ sleep 1
 echo -e "\033[1;31mBASED ON THE IDEA OF MeHrSaM\033[0m"
 sleep 2
 
-# Admin setup prompt
+# 1. Prompt admin for setup information
 read -p "Enter admin username for IRANSSH web panel: " admin_username
 read -sp "Enter admin password for IRANSSH web panel: " admin_password
 echo ""
@@ -16,15 +22,25 @@ read -p "Enter the server's IP address: " server_ip
 read -p "Enter port for the web-based user interface (default 8080): " web_port
 web_port=${web_port:-8080}
 
-# Update system and install necessary packages
+# 2. Update system and install necessary packages
 echo "Updating system and installing necessary packages..."
 apt update && apt upgrade -y
-apt install -y postgresql nginx python3-pip python3-venv ufw certbot python3-certbot-nginx badvpn dropbear git
+apt install -y postgresql nginx python3-pip python3-venv ufw certbot python3-certbot-nginx dropbear git
+
+# Fix for 'badvpn' missing in default repos
+if ! apt install -y badvpn; then
+    echo "Badvpn is not available in the default repositories. Skipping Badvpn installation."
+fi
 
 # Set up PostgreSQL
 echo "Setting up PostgreSQL..."
-sudo -i -u postgres psql -c "CREATE USER iranssh_manager WITH PASSWORD 'password';"
-sudo -i -u postgres psql -c "CREATE DATABASE iranssh_manager OWNER iranssh_manager;"
+if ! sudo -u postgres psql -c "CREATE USER iranssh_manager WITH PASSWORD 'password';"; then
+    echo "Error setting up PostgreSQL. Make sure PostgreSQL is installed and running."
+fi
+
+if ! sudo -u postgres psql -c "CREATE DATABASE iranssh_manager OWNER iranssh_manager;"; then
+    echo "Error creating database. Make sure PostgreSQL is configured properly."
+fi
 
 # Set up firewall rules
 echo "Configuring firewall..."
@@ -33,27 +49,43 @@ ufw allow $web_port
 ufw allow 443
 ufw enable
 
-# Set up BadVPN
+# 3. Set up BadVPN for UDPGW (optional step if installation was skipped)
 read -p "Enter port for BadVPN UDPGW (default 7300): " badvpn_port
 badvpn_port=${badvpn_port:-7300}
-nohup badvpn-udpgw --listen-addr 0.0.0.0:$badvpn_port &
+if command -v badvpn-udpgw &> /dev/null; then
+    nohup badvpn-udpgw --listen-addr 0.0.0.0:$badvpn_port &
+else
+    echo "Badvpn was not installed, skipping UDPGW setup."
+fi
 
-# Set up Dropbear
-echo "Configuring Dropbear for SSH-Dropbear and SSH-Dropbear-TLS..."
-cat <<EOT >> /etc/default/dropbear
+# Set up Dropbear for SSH-Dropbear and SSH-Dropbear-TLS
+echo "Configuring Dropbear..."
+if [ -f /etc/default/dropbear ]; then
+    cat <<EOT >> /etc/default/dropbear
 DROPBEAR_PORT=2222
 DROPBEAR_EXTRA_ARGS="-p 443 -K 300"
 EOT
-systemctl restart dropbear
+    systemctl restart dropbear
+else
+    echo "Dropbear not installed or not configured properly."
+fi
 
-# Set up Django project for IRANSSH
+# 4. Set up Django project for IRANSSH
 echo "Setting up Django project for IRANSSH..."
 mkdir -p /var/www/iranssh
 cd /var/www/iranssh
 
-# Create Python virtual environment and install dependencies
+# Ensure python3-venv is installed
+if ! command -v python3 -m venv &> /dev/null; then
+    echo "python3-venv not found, installing..."
+    apt install -y python3-venv
+fi
+
+# Create Python virtual environment
 python3 -m venv env
 source env/bin/activate
+
+# Install Django and dependencies
 pip install django psycopg2-binary gunicorn paramiko chartjs
 
 # Start Django project
@@ -61,7 +93,7 @@ django-admin startproject iranssh_manager
 cd iranssh_manager
 python3 manage.py startapp sshpanel
 
-# Modify Django settings to use PostgreSQL and configure allowed hosts
+# Modify Django settings to use PostgreSQL
 sed -i '/DATABASES =/,+5d' iranssh_manager/settings.py
 cat <<EOT >> iranssh_manager/settings.py
 DATABASES = {
@@ -132,6 +164,12 @@ nginx -t && systemctl restart nginx
 
 # Set up SSL with Let's Encrypt
 echo "Setting up Let's Encrypt SSL for HTTPS..."
+if ! command -v certbot &> /dev/null; then
+    echo "Certbot is not installed. Installing certbot for SSL."
+    apt install -y certbot
+    apt install -y python3-certbot-nginx
+fi
+
 certbot --nginx -d $server_ip --non-interactive --agree-tos -m admin@example.com
 
 # Customize login page and panel pages for IRANSSH branding
@@ -159,7 +197,7 @@ cat <<EOT >> /var/www/iranssh/iranssh_manager/sshpanel/templates/base.html
 </html>
 EOT
 
-#  Customizing login page
+# Customizing login page
 cat <<EOT > /var/www/iranssh/iranssh_manager/sshpanel/templates/registration/login.html
 {% extends 'base.html' %}
 {% block content %}
