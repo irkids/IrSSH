@@ -2,48 +2,15 @@
 
 # IRANSSH Installation Script
 # Based on the idea of MeHrSaM
-# Version: 3.0
+# Version: 5.0
 
 set -euo pipefail
-
-# Function to output script content
-output_script() {
-    cat << 'EOF'
-#!/bin/bash
-# (The entire script content goes here)
-EOF
-    exit 0
-}
-
-# Check if no arguments are provided
-if [ $# -eq 0 ]; then
-    output_script
-fi
 
 # Constants
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 LOG_FILE="/var/log/iranssh_install.log"
 IRANSSH_DIR="/var/www/iranssh"
 VENV_DIR="$IRANSSH_DIR/env"
-
-# Parse command-line arguments
-while [[ $# -gt 0 ]]; do
-    key="$1"
-    case $key in
-        --admin-username) ADMIN_USERNAME="$2"; shift 2 ;;
-        --admin-password) ADMIN_PASSWORD="$2"; shift 2 ;;
-        --server-ip) SERVER_IP="$2"; shift 2 ;;
-        --domain-name) DOMAIN_NAME="$2"; shift 2 ;;
-        --web-port) WEB_PORT="$2"; shift 2 ;;
-        --db-name) DB_NAME="$2"; shift 2 ;;
-        --db-user) DB_USER="$2"; shift 2 ;;
-        --db-password) DB_PASSWORD="$2"; shift 2 ;;
-        --ssh-port) SSH_PORT="$2"; shift 2 ;;
-        --dropbear-port) DROPBEAR_PORT="$2"; shift 2 ;;
-        --badvpn-port) BADVPN_PORT="$2"; shift 2 ;;
-        *) echo "Unknown option: $1"; exit 1 ;;
-    esac
-done
 
 # Function to log messages
 log_message() {
@@ -80,6 +47,9 @@ install_dependencies() {
     log_message "INFO" "Updating system and installing dependencies..."
     apt update && apt upgrade -y
     apt install -y postgresql nginx python3-pip python3-venv ufw certbot python3-certbot-nginx dropbear git badvpn
+    if ! command -v pv &> /dev/null; then
+        apt install -y pv
+    fi
     if [[ $? -ne 0 ]]; then
         log_message "ERROR" "Failed to install dependencies"
         exit 1
@@ -315,6 +285,15 @@ install_iranssh() {
     check_root
     validate_config
     install_dependencies
+    
+    # Display introduction
+    echo -n "I hope the moments you use IRANSSH have been useful for you" | pv -qL 20
+    sleep 1
+    echo ""
+    sleep 1
+    echo -e "\033[1;31mBASED ON THE IDEA OF MeHrSaM\033[0m"
+    sleep 2
+    
     setup_postgresql
     configure_firewall
     setup_badvpn
@@ -328,7 +307,27 @@ install_iranssh() {
     log_message "INFO" "IRANSSH installation completed successfully!"
     echo "Access the IRANSSH web interface at https://$DOMAIN_NAME"
     echo "Log in with the credentials you provided."
+    echo -e "\033[1;31mBASED ON THE IDEA OF MeHrSaM\033[0m"
 }
+
+# Parse command-line arguments
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+        --admin-username) ADMIN_USERNAME="$2"; shift 2 ;;
+        --admin-password) ADMIN_PASSWORD="$2"; shift 2 ;;
+        --server-ip) SERVER_IP="$2"; shift 2 ;;
+        --domain-name) DOMAIN_NAME="$2"; shift 2 ;;
+        --web-port) WEB_PORT="$2"; shift 2 ;;
+        --db-name) DB_NAME="$2"; shift 2 ;;
+        --db-user) DB_USER="$2"; shift 2 ;;
+        --db-password) DB_PASSWORD="$2"; shift 2 ;;
+        --ssh-port) SSH_PORT="$2"; shift 2 ;;
+        --dropbear-port) DROPBEAR_PORT="$2"; shift 2 ;;
+        --badvpn-port) BADVPN_PORT="$2"; shift 2 ;;
+        *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+done
 
 # Run the installation
 install_iranssh
