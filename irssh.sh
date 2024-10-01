@@ -2,16 +2,48 @@
 
 # IRANSSH Installation Script
 # Based on the idea of MeHrSaM
-# Version: 2.0
+# Version: 3.0
 
 set -euo pipefail
+
+# Function to output script content
+output_script() {
+    cat << 'EOF'
+#!/bin/bash
+# (The entire script content goes here)
+EOF
+    exit 0
+}
+
+# Check if no arguments are provided
+if [ $# -eq 0 ]; then
+    output_script
+fi
 
 # Constants
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 LOG_FILE="/var/log/iranssh_install.log"
 IRANSSH_DIR="/var/www/iranssh"
 VENV_DIR="$IRANSSH_DIR/env"
-CONFIG_FILE="$SCRIPT_DIR/iranssh_config.ini"
+
+# Parse command-line arguments
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+        --admin-username) ADMIN_USERNAME="$2"; shift 2 ;;
+        --admin-password) ADMIN_PASSWORD="$2"; shift 2 ;;
+        --server-ip) SERVER_IP="$2"; shift 2 ;;
+        --domain-name) DOMAIN_NAME="$2"; shift 2 ;;
+        --web-port) WEB_PORT="$2"; shift 2 ;;
+        --db-name) DB_NAME="$2"; shift 2 ;;
+        --db-user) DB_USER="$2"; shift 2 ;;
+        --db-password) DB_PASSWORD="$2"; shift 2 ;;
+        --ssh-port) SSH_PORT="$2"; shift 2 ;;
+        --dropbear-port) DROPBEAR_PORT="$2"; shift 2 ;;
+        --badvpn-port) BADVPN_PORT="$2"; shift 2 ;;
+        *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+done
 
 # Function to log messages
 log_message() {
@@ -28,24 +60,15 @@ check_root() {
     fi
 }
 
-# Function to load configuration
-load_config() {
-    if [[ ! -f "$CONFIG_FILE" ]]; then
-        log_message "ERROR" "Configuration file not found: $CONFIG_FILE"
-        exit 1
-    fi
-    source "$CONFIG_FILE"
-}
-
 # Function to validate configuration
 validate_config() {
     local required_vars=(
-        "ADMIN_USERNAME" "ADMIN_PASSWORD" "SERVER_IP" "WEB_PORT"
+        "ADMIN_USERNAME" "ADMIN_PASSWORD" "SERVER_IP" "DOMAIN_NAME" "WEB_PORT"
         "DB_NAME" "DB_USER" "DB_PASSWORD" "SSH_PORT" "DROPBEAR_PORT"
-        "BADVPN_PORT" "DOMAIN_NAME"
+        "BADVPN_PORT"
     )
     for var in "${required_vars[@]}"; do
-        if [[ -z "${!var}" ]]; then
+        if [[ -z "${!var:-}" ]]; then
             log_message "ERROR" "Missing required configuration: $var"
             exit 1
         fi
@@ -290,7 +313,6 @@ install_iranssh() {
     log_message "INFO" "Starting IRANSSH installation..."
     
     check_root
-    load_config
     validate_config
     install_dependencies
     setup_postgresql
@@ -305,7 +327,7 @@ install_iranssh() {
     
     log_message "INFO" "IRANSSH installation completed successfully!"
     echo "Access the IRANSSH web interface at https://$DOMAIN_NAME"
-    echo "Log in with the credentials you provided in the configuration file."
+    echo "Log in with the credentials you provided."
 }
 
 # Run the installation
