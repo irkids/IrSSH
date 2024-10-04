@@ -75,6 +75,40 @@ chmod +x /opt/vpn-management-system/install.sh
 # Change to the installation directory
 cd /opt/vpn-management-system
 
+# Setup database
+log "Setting up database..."
+db_name="vpn_management"
+db_user="vpnuser"
+db_password=$(openssl rand -base64 12)
+
+# Check if database exists
+if sudo -u postgres psql -lqt | cut -d \| -f 1 | grep -qw "$db_name"; then
+    warning "Database '$db_name' already exists."
+    read -p "Do you want to use the existing database? (y/n): " use_existing_db
+    if [[ $use_existing_db == "n" ]]; then
+        read -p "Enter a new database name: " db_name
+    fi
+fi
+
+# Create database if it doesn't exist
+if ! sudo -u postgres psql -lqt | cut -d \| -f 1 | grep -qw "$db_name"; then
+    sudo -u postgres psql -c "CREATE DATABASE $db_name;"
+    log "Database '$db_name' created."
+else
+    log "Using existing database '$db_name'."
+fi
+
+# Create user if it doesn't exist
+if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$db_user'" | grep -q 1; then
+    sudo -u postgres psql -c "CREATE USER $db_user WITH PASSWORD '$db_password';"
+    log "Database user '$db_user' created."
+else
+    log "Database user '$db_user' already exists. Using existing user."
+fi
+
+# Grant privileges
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $db_name TO $db_user;"
+
 # Create a default .env file
 log "Creating default .env file..."
 cat > .env << EOF
@@ -82,16 +116,10 @@ ADMIN_USERNAME=$admin_username
 ADMIN_PASSWORD=$admin_password
 SERVER_IP=$server_ip
 WEB_PORT=$web_port
-DB_DATABASE=vpn_management
-DB_USERNAME=vpnuser
-DB_PASSWORD=$(openssl rand -base64 12)
+DB_DATABASE=$db_name
+DB_USERNAME=$db_user
+DB_PASSWORD=$db_password
 EOF
-
-# Setup database
-log "Setting up database..."
-sudo -u postgres psql -c "CREATE DATABASE vpn_management;"
-sudo -u postgres psql -c "CREATE USER vpnuser WITH PASSWORD '$(grep DB_PASSWORD .env | cut -d '=' -f2)';"
-sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE vpn_management TO vpnuser;"
 
 # Create a basic docker-compose.yml file
 log "Creating docker-compose.yml file..."
@@ -113,9 +141,9 @@ services:
   db:
     image: postgres:13
     environment:
-      POSTGRES_DB: vpn_management
-      POSTGRES_USER: vpnuser
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: $db_name
+      POSTGRES_USER: $db_user
+      POSTGRES_PASSWORD: $db_password
     volumes:
       - pgdata:/var/lib/postgresql/data
 
