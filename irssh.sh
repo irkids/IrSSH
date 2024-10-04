@@ -58,9 +58,13 @@ curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compo
 chmod +x /usr/local/bin/docker-compose
 
 # Clone the repository
-log "Cloning the VPN Management System repository..."
-read -p "Enter the GitHub repository URL for the VPN Management System: " repo_url
-git clone $repo_url /opt/vpn-management-system
+log "Downloading the VPN Management System installation script..."
+repo_url="https://raw.githubusercontent.com/irkids/IrSSH/refs/heads/main/installvpn.sh"
+mkdir -p /opt/vpn-management-system
+wget $repo_url -O /opt/vpn-management-system/install.sh
+chmod +x /opt/vpn-management-system/install.sh
+
+# Change to the installation directory
 cd /opt/vpn-management-system
 
 # Setup environment variables
@@ -194,8 +198,9 @@ install_vpn_protocols() {
 main() {
     log "Starting VPN Management System installation..."
     
-    # Install core components
-    # ... (previous steps remain the same)
+    # Run the downloaded installation script
+    log "Running the VPN Management System installation script..."
+    bash /opt/vpn-management-system/install.sh
 
     # VPN protocol installation
     install_vpn_protocols
