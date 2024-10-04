@@ -38,6 +38,14 @@ if [[ $(lsb_release -rs) != "22.04" ]]; then
     error "This script is designed for Ubuntu 22.04. Your system is running $(lsb_release -ds)"
 fi
 
+# Collect initial configuration information
+log "Collecting initial configuration information..."
+read -p "Enter the administrator username: " admin_username
+read -sp "Enter the administrator password: " admin_password
+echo
+read -p "Enter the server IP address: " server_ip
+read -p "Enter the 4-digit web port: " web_port
+
 # Update system
 log "Updating system..."
 apt update && apt upgrade -y
@@ -67,17 +75,23 @@ chmod +x /opt/vpn-management-system/install.sh
 # Change to the installation directory
 cd /opt/vpn-management-system
 
-# Setup environment variables
-log "Setting up environment variables..."
-cp .env.example .env
-# Prompt for necessary environment variables
-read -p "Enter the database name: " db_name
-read -p "Enter the database user: " db_user
-read -sp "Enter the database password: " db_password
-echo
-sed -i "s/DB_DATABASE=.*/DB_DATABASE=$db_name/" .env
-sed -i "s/DB_USERNAME=.*/DB_USERNAME=$db_user/" .env
-sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$db_password/" .env
+# Create a default .env file
+log "Creating default .env file..."
+cat > .env << EOF
+ADMIN_USERNAME=$admin_username
+ADMIN_PASSWORD=$admin_password
+SERVER_IP=$server_ip
+WEB_PORT=$web_port
+DB_DATABASE=vpn_management
+DB_USERNAME=vpnuser
+DB_PASSWORD=$(openssl rand -base64 12)
+EOF
+
+# Setup database
+log "Setting up database..."
+sudo -u postgres psql -c "CREATE DATABASE vpn_management;"
+sudo -u postgres psql -c "CREATE USER vpnuser WITH PASSWORD '$(grep DB_PASSWORD .env | cut -d '=' -f2)';"
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE vpn_management TO vpnuser;"
 
 # Build and start Docker containers
 log "Building and starting Docker containers..."
@@ -85,14 +99,13 @@ docker-compose up -d --build
 
 # Setup Nginx reverse proxy
 log "Setting up Nginx reverse proxy..."
-read -p "Enter your domain name: " domain_name
 cat > /etc/nginx/sites-available/vpn-management << EOF
 server {
     listen 80;
-    server_name $domain_name;
+    server_name $server_ip;
 
     location / {
-        proxy_pass http://localhost:3000;
+        proxy_pass http://localhost:$web_port;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -110,9 +123,9 @@ log "Setting up SSL with Let's Encrypt..."
 apt install -y certbot python3-certbot-nginx
 read -p "Do you want to set up SSL now? (y/n): " setup_ssl
 if [[ $setup_ssl == "y" ]]; then
-    certbot --nginx -d $domain_name
+    certbot --nginx -d $server_ip
 else
-    log "SSL setup skipped. You can set it up later using: certbot --nginx -d $domain_name"
+    log "SSL setup skipped. You can set it up later using: certbot --nginx -d $server_ip"
 fi
 
 # Setup firewall
@@ -120,6 +133,7 @@ log "Configuring firewall..."
 ufw allow 22
 ufw allow 80
 ufw allow 443
+ufw allow $web_port
 ufw enable
 
 # VPN protocol installation function
@@ -206,8 +220,8 @@ main() {
     install_vpn_protocols
 
     log "VPN Management System installation complete!"
-    log "Access the web interface at https://$domain_name"
-    log "Default login: admin / password"
+    log "Access the web interface at http://$server_ip:$web_port"
+    log "Admin login: $admin_username / $admin_password"
     warning "Please change the default password immediately after logging in."
 }
 
