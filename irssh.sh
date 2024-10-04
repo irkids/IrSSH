@@ -59,13 +59,21 @@ chmod +x /usr/local/bin/docker-compose
 
 # Clone the repository
 log "Cloning the VPN Management System repository..."
-git clone https://github.com/your-repo/vpn-management-system.git /opt/vpn-management-system
+read -p "Enter the GitHub repository URL for the VPN Management System: " repo_url
+git clone $repo_url /opt/vpn-management-system
 cd /opt/vpn-management-system
 
 # Setup environment variables
 log "Setting up environment variables..."
 cp .env.example .env
-# TODO: Update .env file with appropriate values
+# Prompt for necessary environment variables
+read -p "Enter the database name: " db_name
+read -p "Enter the database user: " db_user
+read -sp "Enter the database password: " db_password
+echo
+sed -i "s/DB_DATABASE=.*/DB_DATABASE=$db_name/" .env
+sed -i "s/DB_USERNAME=.*/DB_USERNAME=$db_user/" .env
+sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$db_password/" .env
 
 # Build and start Docker containers
 log "Building and starting Docker containers..."
@@ -73,10 +81,11 @@ docker-compose up -d --build
 
 # Setup Nginx reverse proxy
 log "Setting up Nginx reverse proxy..."
+read -p "Enter your domain name: " domain_name
 cat > /etc/nginx/sites-available/vpn-management << EOF
 server {
     listen 80;
-    server_name your-domain.com;
+    server_name $domain_name;
 
     location / {
         proxy_pass http://localhost:3000;
@@ -95,7 +104,12 @@ nginx -t && systemctl restart nginx
 # Setup SSL with Let's Encrypt
 log "Setting up SSL with Let's Encrypt..."
 apt install -y certbot python3-certbot-nginx
-certbot --nginx -d your-domain.com
+read -p "Do you want to set up SSL now? (y/n): " setup_ssl
+if [[ $setup_ssl == "y" ]]; then
+    certbot --nginx -d $domain_name
+else
+    log "SSL setup skipped. You can set it up later using: certbot --nginx -d $domain_name"
+fi
 
 # Setup firewall
 log "Configuring firewall..."
@@ -187,7 +201,7 @@ main() {
     install_vpn_protocols
 
     log "VPN Management System installation complete!"
-    log "Access the web interface at https://your-domain.com"
+    log "Access the web interface at https://$domain_name"
     log "Default login: admin / password"
     warning "Please change the default password immediately after logging in."
 }
