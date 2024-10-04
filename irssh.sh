@@ -93,6 +93,36 @@ sudo -u postgres psql -c "CREATE DATABASE vpn_management;"
 sudo -u postgres psql -c "CREATE USER vpnuser WITH PASSWORD '$(grep DB_PASSWORD .env | cut -d '=' -f2)';"
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE vpn_management TO vpnuser;"
 
+# Create a basic docker-compose.yml file
+log "Creating docker-compose.yml file..."
+cat > docker-compose.yml << EOF
+version: '3'
+services:
+  app:
+    image: node:14
+    working_dir: /app
+    volumes:
+      - ./:/app
+    ports:
+      - "${web_port}:3000"
+    environment:
+      - NODE_ENV=production
+    command: npm start
+    depends_on:
+      - db
+  db:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: vpn_management
+      POSTGRES_USER: vpnuser
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+EOF
+
 # Build and start Docker containers
 log "Building and starting Docker containers..."
 docker-compose up -d --build
