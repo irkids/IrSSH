@@ -1,289 +1,705 @@
-#!/bin/bash
+// File: docker-compose.yml
+version: '3.8'
 
-# IRSSH VPN Management System Installation Script
-# Designed and compiled by MeHrSaM
-
-# Error handling
-set -e
-
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-# Log function
-log() {
-    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
-}
-
-# Error function
-error() {
-    echo -e "${RED}[ERROR] $1${NC}" >&2
-    exit 1
-}
-
-# Warning function
-warning() {
-    echo -e "${YELLOW}[WARNING] $1${NC}"
-}
-
-# Check if script is run as root
-if [[ $EUID -ne 0 ]]; then
-   error "This script must be run as root" 
-fi
-
-# Check if running on Ubuntu 22.04
-if [[ $(lsb_release -rs) != "22.04" ]]; then
-    error "This script is designed for Ubuntu 22.04. Your system is running $(lsb_release -ds)"
-fi
-
-# Collect initial configuration information
-log "Collecting initial configuration information..."
-read -p "Enter the administrator username: " admin_username
-read -sp "Enter the administrator password: " admin_password
-echo
-read -p "Enter the server IP address: " server_ip
-read -p "Enter the 4-digit web port: " web_port
-
-# Update system
-log "Updating system..."
-apt update && apt upgrade -y
-
-# Install dependencies
-log "Installing dependencies..."
-apt install -y curl wget git unzip nginx postgresql nodejs npm
-
-# Install Docker
-log "Installing Docker..."
-curl -fsSL https://get.docker.com -o get-docker.sh
-sh get-docker.sh
-usermod -aG docker $USER
-
-# Install Docker Compose
-log "Installing Docker Compose..."
-curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-chmod +x /usr/local/bin/docker-compose
-
-# Clone the repository
-log "Downloading the VPN Management System installation script..."
-repo_url="https://raw.githubusercontent.com/irkids/IrSSH/refs/heads/main/installvpn.sh"
-mkdir -p /opt/vpn-management-system
-wget $repo_url -O /opt/vpn-management-system/install.sh
-chmod +x /opt/vpn-management-system/install.sh
-
-# Change to the installation directory
-cd /opt/vpn-management-system
-
-# Setup database
-log "Setting up database..."
-db_name="vpn_management"
-db_user="vpnuser"
-db_password=$(openssl rand -base64 12)
-
-# Check if database exists
-if sudo -u postgres psql -lqt | cut -d \| -f 1 | grep -qw "$db_name"; then
-    warning "Database '$db_name' already exists."
-    read -p "Do you want to use the existing database? (y/n): " use_existing_db
-    if [[ $use_existing_db == "n" ]]; then
-        read -p "Enter a new database name: " db_name
-    fi
-fi
-
-# Create database if it doesn't exist
-if ! sudo -u postgres psql -lqt | cut -d \| -f 1 | grep -qw "$db_name"; then
-    sudo -u postgres psql -c "CREATE DATABASE $db_name;"
-    log "Database '$db_name' created."
-else
-    log "Using existing database '$db_name'."
-fi
-
-# Create user if it doesn't exist
-if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$db_user'" | grep -q 1; then
-    sudo -u postgres psql -c "CREATE USER $db_user WITH PASSWORD '$db_password';"
-    log "Database user '$db_user' created."
-else
-    log "Database user '$db_user' already exists. Using existing user."
-fi
-
-# Grant privileges
-sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $db_name TO $db_user;"
-
-# Create a default .env file
-log "Creating default .env file..."
-cat > .env << EOF
-ADMIN_USERNAME=$admin_username
-ADMIN_PASSWORD=$admin_password
-SERVER_IP=$server_ip
-WEB_PORT=$web_port
-DB_DATABASE=$db_name
-DB_USERNAME=$db_user
-DB_PASSWORD=$db_password
-EOF
-
-# Create a basic docker-compose.yml file
-log "Creating docker-compose.yml file..."
-cat > docker-compose.yml << EOF
-version: '3'
 services:
-  app:
-    image: node:14
-    working_dir: /app
-    volumes:
-      - ./:/app
+  frontend:
+    build: ./frontend
     ports:
-      - "${web_port}:3000"
+      - "${WEB_PORT}:3000"
     environment:
+      - REACT_APP_API_URL=http://backend:5000
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+  backend:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    environment:
+      - DATABASE_URL=postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/${DB_DATABASE}
+      - JWT_SECRET=${JWT_SECRET}
       - NODE_ENV=production
-    command: npm start
     depends_on:
       - db
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+
   db:
     image: postgres:13
     environment:
-      POSTGRES_DB: $db_name
-      POSTGRES_USER: $db_user
-      POSTGRES_PASSWORD: $db_password
+      POSTGRES_DB: ${DB_DATABASE}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
 
 volumes:
   pgdata:
-EOF
 
-# Build and start Docker containers
-log "Building and starting Docker containers..."
-docker-compose up -d --build
+// File: backend/Dockerfile
+FROM node:14
 
-# Setup Nginx reverse proxy
-log "Setting up Nginx reverse proxy..."
-cat > /etc/nginx/sites-available/vpn-management << EOF
-server {
-    listen 80;
-    server_name $server_ip;
+WORKDIR /app
 
-    location / {
-        proxy_pass http://localhost:$web_port;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \$host;
-        proxy_cache_bypass \$http_upgrade;
+COPY package*.json ./
+RUN npm install
+
+COPY . .
+
+EXPOSE 5000
+
+CMD ["npm", "start"]
+
+// File: frontend/Dockerfile
+FROM node:14
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm install
+
+COPY . .
+
+EXPOSE 3000
+
+CMD ["npm", "start"]
+
+// File: backend/package.json
+{
+  "name": "vpn-management-backend",
+  "version": "1.0.0",
+  "description": "Backend for VPN Management System",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js"
+  },
+  "dependencies": {
+    "@prisma/client": "^3.0.0",
+    "bcrypt": "^5.0.1",
+    "cors": "^2.8.5",
+    "express": "^4.17.1",
+    "jsonwebtoken": "^8.5.1",
+    "winston": "^3.3.3"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.12",
+    "prisma": "^3.0.0"
+  }
+}
+
+// File: frontend/package.json
+{
+  "name": "vpn-management-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@material-ui/core": "^4.12.3",
+    "@material-ui/icons": "^4.11.2",
+    "axios": "^0.21.1",
+    "react": "^17.0.2",
+    "react-dom": "^17.0.2",
+    "react-router-dom": "^5.2.0",
+    "react-scripts": "4.0.3",
+    "recharts": "^2.1.0"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app",
+      "react-app/jest"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
+}
+
+// File: backend/prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             Int          @id @default(autoincrement())
+  username       String       @unique
+  password       String
+  email          String       @unique
+  createdAt      DateTime     @default(now())
+  lastLogin      DateTime?
+  status         String
+  trafficQuota   Int?
+  expirationDate DateTime?
+  connections    Connection[]
+}
+
+model Connection {
+  id             Int      @id @default(autoincrement())
+  userId         Int
+  protocolId     Int
+  ipAddress      String
+  connectedAt    DateTime @default(now())
+  disconnectedAt DateTime?
+  bytesSent      Int      @default(0)
+  bytesReceived  Int      @default(0)
+  user           User     @relation(fields: [userId], references: [id])
+  protocol       Protocol @relation(fields: [protocolId], references: [id])
+}
+
+model Protocol {
+  id           Int          @id @default(autoincrement())
+  name         String
+  version      String
+  isInstalled  Boolean      @default(false)
+  installDate  DateTime?
+  port         Int?
+  connections  Connection[]
+}
+
+model Setting {
+  key         String   @id
+  value       String
+  description String?
+}
+
+model Backup {
+  id        Int      @id @default(autoincrement())
+  fileName  String
+  createdAt DateTime @default(now())
+  size      Int
+  status    String
+}
+
+// File: backend/src/server.js
+const express = require('express');
+const { PrismaClient } = require('@prisma/client');
+const cors = require('cors');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcrypt');
+const { exec } = require('child_process');
+const winston = require('winston');
+
+const app = express();
+const prisma = new PrismaClient();
+
+// Setup logging
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.json(),
+  defaultMeta: { service: 'vpn-management' },
+  transports: [
+    new winston.transports.File({ filename: 'error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'combined.log' }),
+  ],
+});
+
+if (process.env.NODE_ENV !== 'production') {
+  logger.add(new winston.transports.Console({
+    format: winston.format.simple(),
+  }));
+}
+
+app.use(cors());
+app.use(express.json());
+
+// Middleware to verify JWT token
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (token == null) return res.sendStatus(401);
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) return res.sendStatus(403);
+    req.user = user;
+    next();
+  });
+};
+
+// Routes
+app.post('/login', async (req, res) => {
+  const { username, password } = req.body;
+  const user = await prisma.user.findUnique({ where: { username } });
+
+  if (user && await bcrypt.compare(password, user.password)) {
+    const token = jwt.sign({ id: user.id, username: user.username }, process.env.JWT_SECRET);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { lastLogin: new Date() }
+    });
+    res.json({ token });
+  } else {
+    res.status(400).json({ error: 'Invalid credentials' });
+  }
+});
+
+app.get('/users', authenticateToken, async (req, res) => {
+  try {
+    const users = await prisma.user.findMany();
+    res.json(users);
+  } catch (error) {
+    logger.error('Error fetching users:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/users', authenticateToken, async (req, res) => {
+  try {
+    const { username, password, email, trafficQuota, expirationDate } = req.body;
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const user = await prisma.user.create({
+      data: { 
+        username, 
+        password: hashedPassword, 
+        email, 
+        status: 'Active',
+        trafficQuota,
+        expirationDate: expirationDate ? new Date(expirationDate) : null
+      }
+    });
+    res.status(201).json(user);
+  } catch (error) {
+    logger.error('Error creating user:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/users/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { username, email, status, trafficQuota, expirationDate } = req.body;
+    const user = await prisma.user.update({
+      where: { id: parseInt(id) },
+      data: { 
+        username, 
+        email, 
+        status,
+        trafficQuota,
+        expirationDate: expirationDate ? new Date(expirationDate) : null
+      }
+    });
+    res.json(user);
+  } catch (error) {
+    logger.error('Error updating user:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.delete('/users/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await prisma.user.delete({ where: { id: parseInt(id) } });
+    res.sendStatus(204);
+  } catch (error) {
+    logger.error('Error deleting user:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/connections', authenticateToken, async (req, res) => {
+  try {
+    const connections = await prisma.connection.findMany({
+      include: { user: true, protocol: true }
+    });
+    res.json(connections);
+  } catch (error) {
+    logger.error('Error fetching connections:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/connections/:id/kill', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const connection = await prisma.connection.findUnique({ where: { id: parseInt(id) } });
+    if (!connection) {
+      return res.status(404).json({ error: 'Connection not found' });
     }
-}
-EOF
+    // Here you would implement the logic to kill the connection
+    // This is a placeholder and should be replaced with actual implementation
+    console.log(`Killing connection ${id}`);
+    await prisma.connection.update({
+      where: { id: parseInt(id) },
+      data: { disconnectedAt: new Date() }
+    });
+    res.sendStatus(200);
+  } catch (error) {
+    logger.error('Error killing connection:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
-ln -s /etc/nginx/sites-available/vpn-management /etc/nginx/sites-enabled/
-nginx -t && systemctl restart nginx
+app.get('/protocols', authenticateToken, async (req, res) => {
+  try {
+    const protocols = await prisma.protocol.findMany();
+    res.json(protocols);
+  } catch (error) {
+    logger.error('Error fetching protocols:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
-# Setup SSL with Let's Encrypt
-log "Setting up SSL with Let's Encrypt..."
-apt install -y certbot python3-certbot-nginx
-read -p "Do you want to set up SSL now? (y/n): " setup_ssl
-if [[ $setup_ssl == "y" ]]; then
-    certbot --nginx -d $server_ip
-else
-    log "SSL setup skipped. You can set it up later using: certbot --nginx -d $server_ip"
-fi
+app.post('/protocols', authenticateToken, async (req, res) => {
+  try {
+    const { name, version, port } = req.body;
+    const protocol = await prisma.protocol.create({
+      data: { name, version, isInstalled: true, installDate: new Date(), port }
+    });
+    res.status(201).json(protocol);
+  } catch (error) {
+    logger.error('Error creating protocol:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
-# Setup firewall
-log "Configuring firewall..."
-ufw allow 22
-ufw allow 80
-ufw allow 443
-ufw allow $web_port
-ufw enable
+app.post('/protocols/:name/install', authenticateToken, (req, res) => {
+  const { name } = req.params;
+  const scriptPath = `/opt/vpn-management-system/install${name.toLowerCase()}.sh`;
+  
+  exec(`bash ${scriptPath}`, (error, stdout, stderr) => {
+    if (error) {
+      logger.error(`Error installing ${name}:`, error);
+      return res.status(500).json({ error: `Installation failed: ${error.message}` });
+    }
+    logger.info(`${name} installed successfully`);
+    res.json({ message: `${name} installed successfully`, output: stdout });
+  });
+});
 
-# VPN protocol installation function
-install_vpn_protocol() {
-    local protocol=$1
-    log "Installing $protocol..."
-    case $protocol in
-        "SSH")
-            # Install and configure SSH
-            apt install -y openssh-server
-            # TODO: Add SSH-specific configuration
-            ;;
-        "IKEv2/IPsec")
-            # Install and configure IKEv2/IPsec
-            apt install -y strongswan libstrongswan-standard-plugins libcharon-extra-plugins
-            # TODO: Add IKEv2/IPsec-specific configuration
-            ;;
-        "L2TP/IPSec")
-            # Install and configure L2TP/IPSec
-            apt install -y xl2tpd
-            # TODO: Add L2TP/IPSec-specific configuration
-            ;;
-        "Cisco AnyConnect")
-            # Install and configure Cisco AnyConnect
-            # TODO: Add Cisco AnyConnect-specific installation and configuration
-            ;;
-        "WireGuard")
-            # Install and configure WireGuard
-            apt install -y wireguard
-            # TODO: Add WireGuard-specific configuration
-            ;;
-        "ShadowSocks")
-            # Install and configure ShadowSocks
-            apt install -y shadowsocks-libev
-            # TODO: Add ShadowSocks-specific configuration
-            ;;
-        "V2Ray")
-            # Install and configure V2Ray
-            bash <(curl -L https://raw.githubusercontent.com/v2fly/fhs-install-v2ray/master/install-release.sh)
-            # TODO: Add V2Ray-specific configuration
-            ;;
-        *)
-            warning "Unknown protocol: $protocol"
-            ;;
-    esac
-}
+app.get('/settings', authenticateToken, async (req, res) => {
+  try {
+    const settings = await prisma.setting.findMany();
+    res.json(settings);
+  } catch (error) {
+    logger.error('Error fetching settings:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
-# VPN protocol installation menu
-install_vpn_protocols() {
-    while true; do
-        echo "Select VPN protocols to install:"
-        echo "1) SSH"
-        echo "2) IKEv2/IPsec"
-        echo "3) L2TP/IPSec"
-        echo "4) Cisco AnyConnect"
-        echo "5) WireGuard"
-        echo "6) ShadowSocks"
-        echo "7) V2Ray"
-        echo "8) Finish installation"
-        read -p "Enter your choice: " choice
-        case $choice in
-            1) install_vpn_protocol "SSH" ;;
-            2) install_vpn_protocol "IKEv2/IPsec" ;;
-            3) install_vpn_protocol "L2TP/IPSec" ;;
-            4) install_vpn_protocol "Cisco AnyConnect" ;;
-            5) install_vpn_protocol "WireGuard" ;;
-            6) install_vpn_protocol "ShadowSocks" ;;
-            7) install_vpn_protocol "V2Ray" ;;
-            8) break ;;
-            *) echo "Invalid option. Please try again." ;;
-        esac
-    done
-}
+app.put('/settings/:key', authenticateToken, async (req, res) => {
+  try {
+    const { key } = req.params;
+    const { value } = req.body;
+    const setting = await prisma.setting.update({
+      where: { key },
+      data: { value }
+    });
+    res.json(setting);
+  } catch (error) {
+    logger.error('Error updating setting:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
-# Main installation process
-main() {
-    log "Starting VPN Management System installation..."
+app.post('/backups', authenticateToken, (req, res) => {
+  const backupScript = '/opt/vpn-management-system/backup.sh';
+  
+  exec(`bash ${backupScript}`, async (error, stdout, stderr) => {
+    if (error) {
+      logger.error('Error creating backup:', error);
+      return res.status(500).json({ error: `Backup failed: ${error.message}` });
+    }
     
-    # Run the downloaded installation script
-    log "Running the VPN Management System installation script..."
-    bash /opt/vpn-management-system/install.sh
+    // Assuming the backup script outputs the filename and size
+    const [fileName, size] = stdout.trim().split(',');
+    
+    try {
+      const backup = await prisma.backup.create({
+        data: {
+          fileName,
+          size: parseInt(size),
+          status: 'Completed'
+        }
+      });
+      
+      logger.info('Backup created successfully');
+      res.status(201).json(backup);
+    } catch (dbError) {
+      logger.error('Error saving backup to database:', dbError);
+      res.status(500).json({ error: 'Backup created but failed to save to database' });
+    }
+  });
+});
 
-    # VPN protocol installation
-    install_vpn_protocols
+app.get('/system/stats', authenticateToken, (req, res) => {
+  exec('top -bn1 | grep "Cpu(s)" | sed "s/.*, *\\([0-9.]*\\)%* id.*/\\1/" | awk \'{print 100 - $1}\'', (error, stdout, stderr) => {
+    if (error) {
+      logger.error('Error getting CPU usage:', error);
+      return res.status(500).json({ error: 'Failed to get system stats' });
+    }
+    
+const cpuUsage = parseFloat(stdout);
 
-    log "VPN Management System installation complete!"
-    log "Access the web interface at http://$server_ip:$web_port"
-    log "Admin login: $admin_username / $admin_password"
-    warning "Please change the default password immediately after logging in."
-}
+exec('free | grep Mem | awk \'{print $3/$2 * 100.0}\'', (error, stdout, stderr) => {
+  if (error) {
+    logger.error('Error getting RAM usage:', error);
+    return res.status(500).json({ error: 'Failed to get system stats' });
+  }
+  
+  const ramUsage = parseFloat(stdout);
+  
+  exec('df -h / | awk \'NR==2 {print $5}\' | sed \'s/%//\'', (error, stdout, stderr) => {
+    if (error) {
+      logger.error('Error getting disk usage:', error);
+      return res.status(500).json({ error: 'Failed to get system stats' });
+    }
+    
+    const diskUsage = parseFloat(stdout);
+    
+    // Get bandwidth usage (example using ifstat)
+    exec('ifstat -i eth0 1 1 | tail -1 | awk \'{print $1 + $2}\'', (error, stdout, stderr) => {
+      if (error) {
+        logger.error('Error getting bandwidth usage:', error);
+        return res.status(500).json({ error: 'Failed to get system stats' });
+      }
+      
+      const bandwidthUsage = parseFloat(stdout);
+      
+      res.json({
+        cpu: cpuUsage.toFixed(2),
+        ram: ramUsage.toFixed(2),
+        disk: diskUsage.toFixed(2),
+        bandwidth: bandwidthUsage.toFixed(2)
+      });
+    });
+  });
+});
+});
 
-# Run the main installation process
-main
+// Get active, expired, and total users
+app.get('/api/users/stats', authenticateToken, async (req, res) => {
+  try {
+    const activeUsers = await prisma.user.count({ where: { status: 'Active' } });
+    const expiredUsers = await prisma.user.count({ where: { status: 'Expired' } });
+    const totalUsers = await prisma.user.count();
+    
+    res.json({ activeUsers, expiredUsers, totalUsers });
+  } catch (error) {
+    logger.error('Error getting user stats:', error);
+    res.status(500).json({ error: 'Failed to get user stats' });
+  }
+});
 
-exit 0
+// Get most active users
+app.get('/api/users/most-active', authenticateToken, async (req, res) => {
+  try {
+    const mostActiveUsers = await prisma.user.findMany({
+      take: 5,
+      orderBy: {
+        connections: {
+          _count: 'desc'
+        }
+      },
+      include: {
+        _count: {
+          select: { connections: true }
+        }
+      }
+    });
+    
+    res.json(mostActiveUsers);
+  } catch (error) {
+    logger.error('Error getting most active users:', error);
+    res.status(500).json({ error: 'Failed to get most active users' });
+  }
+});
+
+// Online Users
+app.get('/api/users/online', authenticateToken, async (req, res) => {
+  try {
+    const onlineUsers = await prisma.connection.findMany({
+      where: {
+        disconnectedAt: null
+      },
+      include: {
+        user: true,
+        protocol: true
+      }
+    });
+    
+    res.json(onlineUsers);
+  } catch (error) {
+    logger.error('Error getting online users:', error);
+    res.status(500).json({ error: 'Failed to get online users' });
+  }
+});
+
+// Kill connection
+app.post('/api/connections/:id/kill', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await prisma.connection.update({
+      where: { id: parseInt(id) },
+      data: { disconnectedAt: new Date() }
+    });
+    
+    // Here you would implement the actual connection termination logic
+    // This might involve calling a system command or interacting with the VPN server
+    
+    res.json({ message: 'Connection terminated successfully' });
+  } catch (error) {
+    logger.error('Error killing connection:', error);
+    res.status(500).json({ error: 'Failed to kill connection' });
+  }
+});
+
+// User Management
+app.post('/api/users', authenticateToken, async (req, res) => {
+  try {
+    const { username, password, email, trafficQuota, expirationDate, protocol } = req.body;
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
+    const user = await prisma.user.create({
+      data: {
+        username,
+        password: hashedPassword,
+        email,
+        status: 'Active',
+        trafficQuota,
+        expirationDate: expirationDate ? new Date(expirationDate) : null
+      }
+    });
+    
+    // Assign protocol to user
+    if (protocol) {
+      await prisma.userProtocol.create({
+        data: {
+          userId: user.id,
+          protocolId: protocol
+        }
+      });
+    }
+    
+    res.status(201).json(user);
+  } catch (error) {
+    logger.error('Error creating user:', error);
+    res.status(500).json({ error: 'Failed to create user' });
+  }
+});
+
+// Settings
+app.get('/api/settings', authenticateToken, async (req, res) => {
+  try {
+    const settings = await prisma.setting.findMany();
+    res.json(settings);
+  } catch (error) {
+    logger.error('Error getting settings:', error);
+    res.status(500).json({ error: 'Failed to get settings' });
+  }
+});
+
+app.put('/api/settings/:key', authenticateToken, async (req, res) => {
+  try {
+    const { key } = req.params;
+    const { value } = req.body;
+    
+    const setting = await prisma.setting.update({
+      where: { key },
+      data: { value }
+    });
+    
+    res.json(setting);
+  } catch (error) {
+    logger.error('Error updating setting:', error);
+    res.status(500).json({ error: 'Failed to update setting' });
+  }
+});
+
+// Backup
+app.post('/api/backups', authenticateToken, (req, res) => {
+  const backupScript = '/opt/vpn-management-system/backup.sh';
+  
+  exec(`bash ${backupScript}`, async (error, stdout, stderr) => {
+    if (error) {
+      logger.error('Error creating backup:', error);
+      return res.status(500).json({ error: 'Backup failed' });
+    }
+    
+    const [fileName, size] = stdout.trim().split(',');
+    
+    try {
+      const backup = await prisma.backup.create({
+        data: {
+          fileName,
+          size: parseInt(size),
+          status: 'Completed'
+        }
+      });
+      
+      // Send notification to Telegram
+      const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
+      const telegramChatId = process.env.TELEGRAM_CHAT_ID;
+      
+      if (telegramToken && telegramChatId) {
+        const message = `Backup completed: ${fileName}`;
+        axios.post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+          chat_id: telegramChatId,
+          text: message
+        }).catch(error => logger.error('Error sending Telegram notification:', error));
+      }
+      
+      res.status(201).json(backup);
+    } catch (dbError) {
+      logger.error('Error saving backup to database:', dbError);
+      res.status(500).json({ error: 'Backup created but failed to save to database' });
+    }
+  });
+});
+
+// Protocol Management
+app.get('/api/protocols', authenticateToken, async (req, res) => {
+  try {
+    const protocols = await prisma.protocol.findMany();
+    res.json(protocols);
+  } catch (error) {
+    logger.error('Error getting protocols:', error);
+    res.status(500).json({ error: 'Failed to get protocols' });
+  }
+});
+
+app.put('/api/protocols/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { port } = req.body;
+    
+    const protocol = await prisma.protocol.update({
+      where: { id: parseInt(id) },
+      data: { port }
+    });
+    
+    // Here you would implement the actual port change logic
+    // This might involve modifying configuration files and restarting services
+    
+    res.json(protocol);
+  } catch (error) {
+    logger.error('Error updating protocol:', error);
+    res.status(500).json({ error: 'Failed to update protocol' });
+  }
+});
+
+// Start the server
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
