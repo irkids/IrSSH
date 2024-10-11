@@ -6,38 +6,9 @@ set -e
 # Define the installation directory
 INSTALL_DIR="/opt/vpn-management-system"
 
-# Create the installation directory if it doesn't exist
-mkdir -p "$INSTALL_DIR"
+# ... [previous parts of the script remain unchanged] ...
 
-# Function to check if a command exists
-command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
-
-# Function to install a package
-install_package() {
-    if ! command_exists "$1"; then
-        echo "Installing $1..."
-        sudo apt-get update
-        sudo apt-get install -y "$1"
-    else
-        echo "$1 is already installed."
-    fi
-}
-
-# Function to download and set up a script
-setup_script() {
-    local repo_url="$1"
-    local filename="$2"
-    local filepath="$INSTALL_DIR/$filename"
-
-    echo "Downloading $filename..."
-    wget "$repo_url" -O "$filepath"
-    chmod +x "$filepath"
-    echo "$filename downloaded and made executable."
-}
-
-# Function to check and install Docker prerequisites
+# Function to check and install Docker and Docker Compose
 check_docker_prerequisites() {
     install_package "apt-transport-https"
     install_package "ca-certificates"
@@ -52,13 +23,17 @@ check_docker_prerequisites() {
     else
         echo "Docker is already installed."
     fi
+
+    if ! command_exists docker-compose; then
+        echo "Installing Docker Compose..."
+        sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+        sudo chmod +x /usr/local/bin/docker-compose
+    else
+        echo "Docker Compose is already installed."
+    fi
 }
 
-# Function to check and install general prerequisites
-check_general_prerequisites() {
-    install_package "wget"
-    install_package "git"
-}
+# ... [other functions remain unchanged] ...
 
 # Main installation process
 echo "Starting VPN Management System installation..."
@@ -80,10 +55,12 @@ echo "All scripts have been downloaded and set up in $INSTALL_DIR"
 # Check and install Docker prerequisites
 check_docker_prerequisites
 
-# Run the scripts in order
-echo "Running Docker setup script..."
-sudo bash "$INSTALL_DIR/Docker.yml"
+# Run Docker Compose
+echo "Setting up Docker containers..."
+cd "$INSTALL_DIR"
+sudo docker-compose -f Docker.yml up -d
 
+# Run the other scripts
 echo "Running menu script..."
 sudo bash "$INSTALL_DIR/menu.sh"
 
