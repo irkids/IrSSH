@@ -6,13 +6,48 @@ set -e
 # Define the installation directory
 INSTALL_DIR="/opt/vpn-management-system"
 
-# ... [previous parts of the script remain unchanged] ...
+# Create the installation directory if it doesn't exist
+mkdir -p "$INSTALL_DIR"
+
+# Function to check if a command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Function to install a package
+install_package() {
+    if ! command_exists "$1"; then
+        echo "Installing $1..."
+        sudo apt-get update
+        sudo apt-get install -y "$1"
+    else
+        echo "$1 is already installed."
+    fi
+}
+
+# Function to check and install general prerequisites
+check_general_prerequisites() {
+    install_package "wget"
+    install_package "git"
+    install_package "curl"
+}
+
+# Function to download and set up a script
+setup_script() {
+    local repo_url="$1"
+    local filename="$2"
+    local filepath="$INSTALL_DIR/$filename"
+
+    echo "Downloading $filename..."
+    wget "$repo_url" -O "$filepath"
+    chmod +x "$filepath"
+    echo "$filename downloaded and made executable."
+}
 
 # Function to check and install Docker and Docker Compose
 check_docker_prerequisites() {
     install_package "apt-transport-https"
     install_package "ca-certificates"
-    install_package "curl"
     install_package "software-properties-common"
 
     if ! command_exists docker; then
@@ -32,8 +67,6 @@ check_docker_prerequisites() {
         echo "Docker Compose is already installed."
     fi
 }
-
-# ... [other functions remain unchanged] ...
 
 # Main installation process
 echo "Starting VPN Management System installation..."
