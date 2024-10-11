@@ -1,0 +1,1338 @@
+// File: docker-compose.yml
+version: '3.8'
+
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "${WEB_PORT}:3000"
+    environment:
+      - REACT_APP_API_URL=http://backend:5000
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+  backend:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    environment:
+      - DATABASE_URL=postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/${DB_DATABASE}
+      - JWT_SECRET=${JWT_SECRET}
+      - NODE_ENV=production
+    depends_on:
+      - db
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+
+  db:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: ${DB_DATABASE}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+
+// File: backend/Dockerfile
+FROM node:14
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm install
+
+COPY . .
+
+EXPOSE 5000
+
+CMD ["npm", "start"]
+
+// File: frontend/Dockerfile
+FROM node:14
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm install
+
+COPY . .
+
+EXPOSE 3000
+
+CMD ["npm", "start"]
+
+// File: backend/package.json
+{
+  "name": "vpn-management-backend",
+  "version": "1.0.0",
+  "description": "Backend for VPN Management System",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js"
+  },
+  "dependencies": {
+    "@prisma/client": "^3.0.0",
+    "bcrypt": "^5.0.1",
+    "cors": "^2.8.5",
+    "express": "^4.17.1",
+    "jsonwebtoken": "^8.5.1",
+    "winston": "^3.3.3"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.12",
+    "prisma": "^3.0.0"
+  }
+}
+
+// File: frontend/package.json
+{
+  "name": "vpn-management-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@material-ui/core": "^4.12.3",
+    "@material-ui/icons": "^4.11.2",
+    "axios": "^0.21.1",
+    "react": "^17.0.2",
+    "react-dom": "^17.0.2",
+    "react-router-dom": "^5.2.0",
+    "react-scripts": "4.0.3",
+    "recharts": "^2.1.0"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app",
+      "react-app/jest"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
+}
+
+// File: backend/prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             Int          @id @default(autoincrement())
+  username       String       @unique
+  password       String
+  email          String       @unique
+  createdAt      DateTime     @default(now())
+  lastLogin      DateTime?
+  status         String
+  trafficQuota   Int?
+  expirationDate DateTime?
+  connections    Connection[]
+}
+
+model Connection {
+  id             Int      @id @default(autoincrement())
+  userId         Int
+  protocolId     Int
+  ipAddress      String
+  connectedAt    DateTime @default(now())
+  disconnectedAt DateTime?
+  bytesSent      Int      @default(0)
+  bytesReceived  Int      @default(0)
+  user           User     @relation(fields: [userId], references: [id])
+  protocol       Protocol @relation(fields: [protocolId], references: [id])
+}
+
+model Protocol {
+  id           Int          @id @default(autoincrement())
+  name         String
+  version      String
+  isInstalled  Boolean      @default(false)
+  installDate  DateTime?
+  port         Int?
+  connections  Connection[]
+}
+
+model Setting {
+  key         String   @id
+  value       String
+  description String?
+}
+
+model Backup {
+  id        Int      @id @default(autoincrement())
+  fileName  String
+  createdAt DateTime @default(now())
+  size      Int
+  status    String
+}
+
+// File: backend/src/server.js
+const express = require('express');
+const { PrismaClient } = require('@prisma/client');
+const cors = require('cors');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcrypt');
+const { exec } = require('child_process');
+const winston = require('winston');
+
+const app = express();
+const prisma = new PrismaClient();
+
+// Setup logging
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.json(),
+  defaultMeta: { service: 'vpn-management' },
+  transports: [
+    new winston.transports.File({ filename: 'error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'combined.log' }),
+  ],
+});
+
+if (process.env.NODE_ENV !== 'production') {
+  logger.add(new winston.transports.Console({
+    format: winston.format.simple(),
+  }));
+}
+
+app.use(cors());
+app.use(express.json());
+
+// Middleware to verify JWT token
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (token == null) return res.sendStatus(401);
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) return res.sendStatus(403);
+    req.user = user;
+    next();
+  });
+};
+
+// Routes
+app.post('/login', async (req, res) => {
+  const { username, password } = req.body;
+  const user = await prisma.user.findUnique({ where: { username } });
+
+  if (user && await bcrypt.compare(password, user.password)) {
+    const token = jwt.sign({ id: user.id, username: user.username }, process.env.JWT_SECRET);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { lastLogin: new Date() }
+    });
+    res.json({ token });
+  } else {
+    res.status(400).json({ error: 'Invalid credentials' });
+  }
+});
+
+app.get('/users', authenticateToken, async (req, res) => {
+  try {
+    const users = await prisma.user.findMany();
+    res.json(users);
+  } catch (error) {
+    logger.error('Error fetching users:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/users', authenticateToken, async (req, res) => {
+  try {
+    const { username, password, email, trafficQuota, expirationDate } = req.body;
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const user = await prisma.user.create({
+      data: { 
+        username, 
+        password: hashedPassword, 
+        email, 
+        status: 'Active',
+        trafficQuota,
+        expirationDate: expirationDate ? new Date(expirationDate) : null
+      }
+    });
+    res.status(201).json(user);
+  } catch (error) {
+    logger.error('Error creating user:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/users/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { username, email, status, trafficQuota, expirationDate } = req.body;
+    const user = await prisma.user.update({
+      where: { id: parseInt(id) },
+      data: { 
+        username, 
+        email, 
+        status,
+        trafficQuota,
+        expirationDate: expirationDate ? new Date(expirationDate) : null
+      }
+    });
+    res.json(user);
+  } catch (error) {
+    logger.error('Error updating user:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.delete('/users/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await prisma.user.delete({ where: { id: parseInt(id) } });
+    res.sendStatus(204);
+  } catch (error) {
+    logger.error('Error deleting user:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/connections', authenticateToken, async (req, res) => {
+  try {
+    const connections = await prisma.connection.findMany({
+      include: { user: true, protocol: true }
+    });
+    res.json(connections);
+  } catch (error) {
+    logger.error('Error fetching connections:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/connections/:id/kill', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const connection = await prisma.connection.findUnique({ where: { id: parseInt(id) } });
+    if (!connection) {
+      return res.status(404).json({ error: 'Connection not found' });
+    }
+    // Here you would implement the logic to kill the connection
+    // This is a placeholder and should be replaced with actual implementation
+    console.log(`Killing connection ${id}`);
+    await prisma.connection.update({
+      where: { id: parseInt(id) },
+      data: { disconnectedAt: new Date() }
+    });
+    res.sendStatus(200);
+  } catch (error) {
+    logger.error('Error killing connection:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/protocols', authenticateToken, async (req, res) => {
+  try {
+    const protocols = await prisma.protocol.findMany();
+    res.json(protocols);
+  } catch (error) {
+    logger.error('Error fetching protocols:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/protocols', authenticateToken, async (req, res) => {
+  try {
+    const { name, version, port } = req.body;
+    const protocol = await prisma.protocol.create({
+      data: { name, version, isInstalled: true, installDate: new Date(), port }
+    });
+    res.status(201).json(protocol);
+  } catch (error) {
+    logger.error('Error creating protocol:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/protocols/:name/install', authenticateToken, (req, res) => {
+  const { name } = req.params;
+  const scriptPath = `/opt/vpn-management-system/install${name.toLowerCase()}.sh`;
+  
+  exec(`bash ${scriptPath}`, (error, stdout, stderr) => {
+    if (error) {
+      logger.error(`Error installing ${name}:`, error);
+      return res.status(500).json({ error: `Installation failed: ${error.message}` });
+    }
+    logger.info(`${name} installed successfully`);
+    res.json({ message: `${name} installed successfully`, output: stdout });
+  });
+});
+
+app.get('/settings', authenticateToken, async (req, res) => {
+  try {
+    const settings = await prisma.setting.findMany();
+    res.json(settings);
+  } catch (error) {
+    logger.error('Error fetching settings:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/settings/:key', authenticateToken, async (req, res) => {
+  try {
+    const { key } = req.params;
+    const { value } = req.body;
+    const setting = await prisma.setting.update({
+      where: { key },
+      data: { value }
+    });
+    res.json(setting);
+  } catch (error) {
+    logger.error('Error updating setting:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/backups', authenticateToken, (req, res) => {
+  const backupScript = '/opt/vpn-management-system/backup.sh';
+  
+  exec(`bash ${backupScript}`, async (error, stdout, stderr) => {
+    if (error) {
+      logger.error('Error creating backup:', error);
+      return res.status(500).json({ error: `Backup failed: ${error.message}` });
+    }
+    
+    // Assuming the backup script outputs the filename and size
+    const [fileName, size] = stdout.trim().split(',');
+    
+    try {
+      const backup = await prisma.backup.create({
+        data: {
+          fileName,
+          size: parseInt(size),
+          status: 'Completed'
+        }
+      });
+      
+      logger.info('Backup created successfully');
+      res.status(201).json(backup);
+    } catch (dbError) {
+      logger.error('Error saving backup to database:', dbError);
+      res.status(500).json({ error: 'Backup created but failed to save to database' });
+    }
+  });
+});
+
+app.get('/system/stats', authenticateToken, (req, res) => {
+  exec('top -bn1 | grep "Cpu(s)" | sed "s/.*, *\\([0-9.]*\\)%* id.*/\\1/" | awk \'{print 100 - $1}\'', (error, stdout, stderr) => {
+    if (error) {
+      logger.error('Error getting CPU usage:', error);
+      return res.status(500).json({ error: 'Failed to get system stats' });
+    }
+    
+    const cpuUsage = parseFloat(stdout);
+    
+    exec('free | grep Mem | awk \'{print $3/$2 * 100.0}\'', (error, stdout, stderr) => {
+      if (error) {
+        logger.error('Error getting RAM usage:', error);
+        return res.status(500).json({ error: 'Failed to get system stats' });
+      }
+      
+      const ramUsage = parseFloat(stdout);
+      
+      exec('df -h / | awk \'NR==2 {print $5}\' | sed \'s/%//\'', (error, stdout, stderr) => {
+        if (error) {
+          logger.error('Error getting disk usage:', error);
+          return res.status(500).json({ error: 'Failed to get system stats' });
+        }
+        
+        const diskUsage = parseFloat(stdout);
+        
+        res.json({
+          cpu: cpuUsage.toFixed(2),
+          ram: ramUsage.toFixed(2),
+          disk: diskUsage.toFixed(2)
+        });
+      });
+    });
+  });
+});
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+// File: frontend/src/components/Settings.js (continued)
+      settingsObj[setting.key] = setting.value;
+    });
+    setSettings(settingsObj);
+  };
+
+  const handleSettingChange = (key, value) => {
+    setSettings({ ...settings, [key]: value });
+  };
+
+  const handleSaveSettings = async () => {
+    for (const [key, value] of Object.entries(settings)) {
+      await axios.put(`/api/settings/${key}`, { value });
+    }
+    alert('Settings saved successfully!');
+  };
+
+  return (
+    <div className={classes.root}>
+      <Paper className={classes.paper}>
+        <Typography variant="h5" gutterBottom>
+          System Settings
+        </Typography>
+        <form className={classes.form}>
+          <TextField
+            label="Language"
+            value={settings.language || ''}
+            onChange={(e) => handleSettingChange('language', e.target.value)}
+          />
+          <TextField
+            label="Theme"
+            value={settings.theme || ''}
+            onChange={(e) => handleSettingChange('theme', e.target.value)}
+          />
+          <TextField
+            label="Backup Interval (hours)"
+            type="number"
+            value={settings.backupInterval || ''}
+            onChange={(e) => handleSettingChange('backupInterval', e.target.value)}
+          />
+          <TextField
+            label="Telegram Bot Token"
+            value={settings.telegramBotToken || ''}
+            onChange={(e) => handleSettingChange('telegramBotToken', e.target.value)}
+          />
+          <Button variant="contained" color="primary" onClick={handleSaveSettings}>
+            Save Settings
+          </Button>
+        </form>
+      </Paper>
+    </div>
+  );
+}
+
+export default Settings;
+
+// File: frontend/src/components/Backups.js
+import React, { useState, useEffect } from 'react';
+import { makeStyles } from '@material-ui/core/styles';
+import { 
+  Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, 
+  Button, Typography 
+} from '@material-ui/core';
+import axios from 'axios';
+
+const useStyles = makeStyles((theme) => ({
+  root: {
+    flexGrow: 1,
+    padding: theme.spacing(3),
+  },
+  table: {
+    minWidth: 650,
+  },
+  title: {
+    marginBottom: theme.spacing(2),
+  },
+}));
+
+function Backups() {
+  const classes = useStyles();
+  const [backups, setBackups] = useState([]);
+
+  useEffect(() => {
+    fetchBackups();
+  }, []);
+
+  const fetchBackups = async () => {
+    const response = await axios.get('/api/backups');
+    setBackups(response.data);
+  };
+
+  const handleCreateBackup = async () => {
+    await axios.post('/api/backups');
+    fetchBackups();
+  };
+
+  return (
+    <div className={classes.root}>
+      <Typography variant="h5" className={classes.title}>
+        System Backups
+      </Typography>
+      <Button variant="contained" color="primary" onClick={handleCreateBackup}>
+        Create New Backup
+      </Button>
+      <TableContainer component={Paper}>
+        <Table className={classes.table} aria-label="simple table">
+          <TableHead>
+            <TableRow>
+              <TableCell>Filename</TableCell>
+              <TableCell align="right">Created At</TableCell>
+              <TableCell align="right">Size</TableCell>
+              <TableCell align="right">Status</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {backups.map((backup) => (
+              <TableRow key={backup.id}>
+                <TableCell component="th" scope="row">
+                  {backup.fileName}
+                </TableCell>
+                <TableCell align="right">{new Date(backup.createdAt).toLocaleString()}</TableCell>
+                <TableCell align="right">{`${(backup.size / 1024 / 1024).toFixed(2)} MB`}</TableCell>
+                <TableCell align="right">{backup.status}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </div>
+  );
+}
+
+export default Backups;
+
+// File: frontend/src/components/Connections.js
+import React, { useState, useEffect } from 'react';
+import { makeStyles } from '@material-ui/core/styles';
+import { 
+  Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, 
+  Button, Typography 
+} from '@material-ui/core';
+import axios from 'axios';
+
+const useStyles = makeStyles((theme) => ({
+  root: {
+    flexGrow: 1,
+    padding: theme.spacing(3),
+  },
+  table: {
+    minWidth: 650,
+  },
+  title: {
+    marginBottom: theme.spacing(2),
+  },
+}));
+
+function Connections() {
+  const classes = useStyles();
+  const [connections, setConnections] = useState([]);
+
+  useEffect(() => {
+    fetchConnections();
+    const interval = setInterval(fetchConnections, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const fetchConnections = async () => {
+    const response = await axios.get('/api/connections');
+    setConnections(response.data);
+  };
+
+  const handleKillConnection = async (id) => {
+    await axios.post(`/api/connections/${id}/kill`);
+    fetchConnections();
+  };
+
+  return (
+    <div className={classes.root}>
+      <Typography variant="h5" className={classes.title}>
+        Active Connections
+      </Typography>
+      <TableContainer component={Paper}>
+        <Table className={classes.table} aria-label="simple table">
+          <TableHead>
+            <TableRow>
+              <TableCell>Username</TableCell>
+              <TableCell align="right">Protocol</TableCell>
+              <TableCell align="right">IP Address</TableCell>
+              <TableCell align="right">Connected At</TableCell>
+              <TableCell align="right">Actions</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {connections.map((connection) => (
+              <TableRow key={connection.id}>
+                <TableCell component="th" scope="row">
+                  {connection.user.username}
+                </TableCell>
+                <TableCell align="right">{connection.protocol.name}</TableCell>
+                <TableCell align="right">{connection.ipAddress}</TableCell>
+                <TableCell align="right">{new Date(connection.connectedAt).toLocaleString()}</TableCell>
+                <TableCell align="right">
+                  <Button 
+                    variant="contained" 
+                    color="secondary" 
+                    onClick={() => handleKillConnection(connection.id)}
+                  >
+                    Kill
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </div>
+  );
+}
+
+export default Connections;
+
+// File: frontend/src/components/Login.js
+import React, { useState } from 'react';
+import { makeStyles } from '@material-ui/core/styles';
+import { 
+  Paper, Typography, TextField, Button 
+} from '@material-ui/core';
+import axios from 'axios';
+import { useHistory } from 'react-router-dom';
+
+const useStyles = makeStyles((theme) => ({
+  root: {
+    height: '100vh',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  paper: {
+    padding: theme.spacing(4),
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+  },
+  form: {
+    width: '100%',
+    marginTop: theme.spacing(1),
+  },
+  submit: {
+    margin: theme.spacing(3, 0, 2),
+  },
+}));
+
+function Login() {
+  const classes = useStyles();
+  const history = useHistory();
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const response = await axios.post('/api/login', { username, password });
+      localStorage.setItem('token', response.data.token);
+      history.push('/');
+    } catch (error) {
+      alert('Login failed. Please check your credentials.');
+    }
+  };
+
+  return (
+    <div className={classes.root}>
+      <Paper className={classes.paper}>
+        <Typography component="h1" variant="h5">
+          Sign in
+        </Typography>
+        <form className={classes.form} onSubmit={handleSubmit}>
+          <TextField
+            variant="outlined"
+            margin="normal"
+            required
+            fullWidth
+            id="username"
+            label="Username"
+            name="username"
+            autoComplete="username"
+            autoFocus
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+          />
+          <TextField
+            variant="outlined"
+            margin="normal"
+            required
+            fullWidth
+            name="password"
+            label="Password"
+            type="password"
+            id="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <Button
+            type="submit"
+            fullWidth
+            variant="contained"
+            color="primary"
+            className={classes.submit}
+          >
+            Sign In
+          </Button>
+        </form>
+      </Paper>
+    </div>
+  );
+}
+
+export default Login;
+
+// File: frontend/src/components/PrivateRoute.js
+import React from 'react';
+import { Route, Redirect } from 'react-router-dom';
+
+function PrivateRoute({ component: Component, ...rest }) {
+  return (
+    <Route
+      {...rest}
+      render={props =>
+        localStorage.getItem('token') ? (
+          <Component {...props} />
+        ) : (
+          <Redirect
+            to={{
+              pathname: "/login",
+              state: { from: props.location }
+            }}
+          />
+        )
+      }
+    />
+  );
+}
+
+export default PrivateRoute;
+
+// File: frontend/src/App.js (updated)
+import React from 'react';
+import { BrowserRouter as Router, Route, Switch } from 'react-router-dom';
+import { ThemeProvider, createTheme } from '@material-ui/core/styles';
+import CssBaseline from '@material-ui/core/CssBaseline';
+import Dashboard from './components/Dashboard';
+import Users from './components/Users';
+import Protocols from './components/Protocols';
+import Settings from './components/Settings';
+import Backups from './components/Backups';
+import Connections from './components/Connections';
+import Login from './components/Login';
+import PrivateRoute from './components/PrivateRoute';
+import Navbar from './components/Navbar';
+
+const theme = createTheme({
+  palette: {
+    type: 'dark',
+    primary: {
+      main: '#1976d2',
+    },
+    secondary: {
+      main: '#dc004e',
+    },
+  },
+});
+
+function App() {
+  return (
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <Router>
+        <div style={{ display: 'flex' }}>
+          <Navbar />
+          <main style={{ flexGrow: 1, padding: '20px' }}>
+            <Switch>
+              <Route exact path="/login" component={Login} />
+              <PrivateRoute exact path="/" component={Dashboard} />
+              <PrivateRoute path="/users" component={Users} />
+              <PrivateRoute path="/protocols" component={Protocols} />
+              <PrivateRoute path="/settings" component={Settings} />
+              <PrivateRoute path="/backups" component={Backups} />
+              <PrivateRoute path="/connections" component={Connections} />
+            </Switch>
+          </main>
+        </div>
+      </Router>
+    </ThemeProvider>
+  );
+}
+
+export default App;
+
+// File: frontend/src/components/Navbar.js
+import React from 'react';
+import { makeStyles } from '@material-ui/core/styles';
+import { 
+  Drawer, List, ListItem, ListItemIcon, ListItemText, Divider 
+} from '@material-ui/core';
+import { 
+  Dashboard as DashboardIcon,
+  People as PeopleIcon,
+  Settings as SettingsIcon,
+  Backup as BackupIcon,
+  NetworkCheck as NetworkCheckIcon,
+  ExitToApp as ExitToAppIcon
+} from '@material-ui/icons';
+import { Link, useHistory } from 'react-router-dom';
+
+const drawerWidth = 240;
+
+const useStyles = makeStyles((theme) => ({
+  drawer: {
+    width: drawerWidth,
+    flexShrink: 0,
+  },
+  drawerPaper: {
+    width: drawerWidth,
+  },
+  toolbar: theme.mixins.toolbar,
+}));
+
+function Navbar() {
+  const classes = useStyles();
+  const history = useHistory();
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    history.push('/login');
+  };
+
+  return (
+    <Drawer
+      className={classes.drawer}
+      variant="permanent"
+      classes={{
+        paper: classes.drawerPaper,
+      }}
+      anchor="left"
+    >
+      <div className={classes.toolbar} />
+      <Divider />
+      <List>
+        <ListItem button component={Link} to="/">
+          <ListItemIcon><DashboardIcon /></ListItemIcon>
+          <ListItemText primary="Dashboard" />
+        </ListItem>
+        <ListItem button component={Link} to="/users">
+          <ListItemIcon><PeopleIcon /></ListItemIcon>
+          <ListItemText primary="Users" />
+        </ListItem>
+        <ListItem button component={Link} to="/protocols">
+          <ListItemIcon><NetworkCheckIcon /></ListItemIcon>
+          <ListItemText primary="Protocols" />
+        </ListItem>
+        <ListItem button component={Link} to="/connections">
+          <ListItemIcon><NetworkCheckIcon /></ListItemIcon>
+          <ListItemText primary="Connections" />
+        </ListItem>
+        <ListItem button component={Link} to="/settings">
+          <ListItemIcon><SettingsIcon /></ListItemIcon>
+          <ListItemText primary="Settings" />
+        </ListItem>
+        <ListItem button component={Link} to="/backups">
+          <ListItemIcon><BackupIcon /></ListItemIcon>
+          <ListItemText primary="Backups" />
+        </ListItem>
+      </List>
+      <Divider />
+      <List>
+        <ListItem button onClick={handleLogout}>
+          <ListItemIcon><ExitToAppIcon /></ListItemIcon>
+          <ListItemText primary="Logout" />
+        </ListItem>
+      </List>
+    </Drawer>
+  );
+}
+
+export default Navbar;
+
+// File: backend/src/config/db.js
+const { PrismaClient } = require('@prisma/client');
+
+const prisma = new PrismaClient();
+
+module.exports = prisma;
+
+// File: backend/src/routes/index.js
+const express = require('express');
+const userRoutes = require('./userRoutes');
+const protocolRoutes = require('./protocolRoutes');
+const connectionRoutes = require('./connectionRoutes');
+const settingRoutes = require('./settingRoutes');
+const backupRoutes = require('./backupRoutes');
+const authRoutes = require('./authRoutes');
+
+const router = express.Router();
+
+router.use('/users', userRoutes);
+router.use('/protocols', protocolRoutes);
+router.use('/connections', connectionRoutes);
+router.use('/settings', settingRoutes);
+router.use('/backups', backupRoutes);
+router.use('/auth', authRoutes);
+
+module.exports = router;
+
+// File: backend/src/routes/userRoutes.js
+const express = require('express');
+const { PrismaClient } = require('@prisma/client');
+const bcrypt = require('bcrypt');
+const authenticateToken = require('../middleware/auth');
+
+const router = express.Router();
+const prisma = new PrismaClient();
+
+router.get('/', authenticateToken, async (req, res) => {
+  try {
+    const users = await prisma.user.findMany();
+    res.json(users);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+router.post('/', authenticateToken, async (req, res) => {
+  try {
+    const { username, password, email, trafficQuota, expirationDate } = req.body;
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const user = await prisma.user.create({
+      data: {
+        username,
+        password: hashedPassword,
+        email,
+        status: 'Active',
+        trafficQuota,
+        expirationDate: expirationDate ? new Date(expirationDate) : null
+      }
+    });
+    res.status(201).json(user);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to create user' });
+  }
+});
+
+// Add more user-related routes (update, delete, etc.)
+
+module.exports = router;
+
+// File: backend/src/routes/protocolRoutes.js
+const express = require('express');
+const { PrismaClient } = require('@prisma/client');
+const { exec } = require('child_process');
+const authenticateToken = require('../middleware/auth');
+
+const router = express.Router();
+const prisma = new PrismaClient();
+
+router.get('/', authenticateToken, async (req, res) => {
+  try {
+    const protocols = await prisma.protocol.findMany();
+    res.json(protocols);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch protocols' });
+  }
+});
+
+router.post('/install/:name', authenticateToken, (req, res) => {
+  const { name } = req.params;
+  const scriptPath = `/opt/vpn-management-system/install${name.toLowerCase()}.sh`;
+  
+  exec(`bash ${scriptPath}`, async (error, stdout, stderr) => {
+    if (error) {
+      return res.status(500).json({ error: `Installation failed: ${error.message}` });
+    }
+    try {
+      await prisma.protocol.create({
+        data: {
+          name,
+          version: '1.0', // You might want to extract this from the installation output
+          isInstalled: true,
+          installDate: new Date()
+        }
+      });
+      res.json({ message: `${name} installed successfully`, output: stdout });
+    } catch (dbError) {
+      res.status(500).json({ error: 'Protocol installed but failed to update database' });
+    }
+  });
+});
+
+// Add more protocol-related routes
+
+module.exports = router;
+
+// File: backend/src/routes/connectionRoutes.js
+const express = require('express');
+const { PrismaClient } = require('@prisma/client');
+const authenticateToken = require('../middleware/auth');
+
+const router = express.Router();
+const prisma = new PrismaClient();
+
+router.get('/', authenticateToken, async (req, res) => {
+  try {
+    const connections = await prisma.connection.findMany({
+      include: { user: true, protocol: true }
+    });
+    res.json(connections);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch connections' });
+  }
+});
+
+router.post('/:id/kill', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    // Implement the logic to kill the connection
+    // This is a placeholder and should be replaced with actual implementation
+    await prisma.connection.update({
+      where: { id: parseInt(id) },
+      data: { disconnectedAt: new Date() }
+    });
+    res.sendStatus(200);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to kill connection' });
+  }
+});
+
+// Add more connection-related routes
+
+module.exports = router;
+
+// File: backend/src/routes/settingRoutes.js
+const express = require('express');
+const { PrismaClient } = require('@prisma/client');
+const authenticateToken = require('../middleware/auth');
+
+const router = express.Router();
+const prisma = new PrismaClient();
+
+router.get('/', authenticateToken, async (req, res) => {
+  try {
+    const settings = await prisma.setting.findMany();
+    res.json(settings);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch settings' });
+  }
+});
+
+router.put('/:key', authenticateToken, async (req, res) => {
+  try {
+    const { key } = req.params;
+    const { value } = req.body;
+    const setting = await prisma.setting.update({
+      where: { key },
+      data: { value }
+    });
+    res.json(setting);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update setting' });
+  }
+});
+
+// Add more setting-related routes
+
+module.exports = router;
+
+// File: backend/src/routes/backupRoutes.js
+const express = require('express');
+const { PrismaClient } = require('@prisma/client');
+const { exec } = require('child_process');
+const authenticateToken = require('../middleware/auth');
+
+const router = express.Router();
+const prisma = new PrismaClient();
+
+router.get('/', authenticateToken, async (req, res) => {
+  try {
+    const backups = await prisma.backup.findMany();
+    res.json(backups);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch backups' });
+  }
+});
+
+router.post('/', authenticateToken, (req, res) => {
+  const backupScript = '/opt/vpn-management-system/backup.sh';
+  
+  exec(`bash ${backupScript}`, async (error, stdout, stderr) => {
+    if (error) {
+      return res.status(500).json({ error: `Backup failed: ${error.message}` });
+    }
+    
+    const [fileName, size] = stdout.trim().split(',');
+    
+    try {
+      const backup = await prisma.backup.create({
+        data: {
+          fileName,
+          size: parseInt(size),
+          status: 'Completed'
+        }
+      });
+      
+      res.status(201).json(backup);
+    } catch (dbError) {
+      res.status(500).json({ error: 'Backup created but failed to save to database' });
+    }
+  });
+});
+
+// Add more backup-related routes
+
+module.exports = router;
+
+// File: backend/src/routes/authRoutes.js
+const express = require('express');
+const { PrismaClient } = require('@prisma/client');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+
+const router = express.Router();
+const prisma = new PrismaClient();
+
+router.post('/login', async (req, res) => {
+  const { username, password } = req.body;
+  const user = await prisma.user.findUnique({ where: { username } });
+
+  if (user && await bcrypt.compare(password, user.password)) {
+    const token = jwt.sign({ id: user.id, username: user.username }, process.env.JWT_SECRET);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { lastLogin: new Date() }
+    });
+    res.json({ token });
+  } else {
+    res.status(400).json({ error: 'Invalid credentials' });
+  }
+});
+
+module.exports = router;
+
+// File: backend/src/middleware/auth.js
+const jwt = require('jsonwebtoken');
+
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (token == null) return res.sendStatus(401);
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) return res.sendStatus(403);
+    req.user = user;
+    next();
+  });
+}
+
+module.exports = authenticateToken;
+
+// File: backend/src/server.js
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const routes = require('./routes');
+
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+app.use('/api', routes);
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+// File: backend/.env
+DATABASE_URL="postgresql://username:password@localhost:5432/vpnmanagement"
+JWT_SECRET="your-secret-key"
+PORT=5000
+
+// File: frontend/.env
+REACT_APP_API_URL=http://localhost:5000/api
+
+// File: docker-compose.yml
+version: '3.8'
+
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    environment:
+      - REACT_APP_API_URL=http://backend:5000/api
+    depends_on:
+      - backend
+
+  backend:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    environment:
+      - DATABASE_URL=postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/${DB_DATABASE}
+      - JWT_SECRET=${JWT_SECRET}
+      - NODE_ENV=production
+    depends_on:
+      - db
+
+  db:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: ${DB_DATABASE}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+
+// File: nginx.conf
+server {
+    listen 80;
+    server_name your_domain_or_ip;
+
+    location / {
+        proxy_pass http://frontend:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+    location /api {
+        proxy_pass http://backend:5000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
