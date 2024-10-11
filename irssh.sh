@@ -38,10 +38,14 @@ setup_script() {
     local filename="$2"
     local filepath="$INSTALL_DIR/$filename"
 
-    echo "Downloading $filename..."
-    wget "$repo_url" -O "$filepath"
-    chmod +x "$filepath"
-    echo "$filename downloaded and made executable."
+    if [ -f "$filepath" ]; then
+        echo "$filename already exists. Skipping download."
+    else
+        echo "Downloading $filename..."
+        wget "$repo_url" -O "$filepath"
+        chmod +x "$filepath"
+        echo "$filename downloaded and made executable."
+    fi
 }
 
 # Function to check and install Docker and Docker Compose
@@ -91,6 +95,13 @@ check_docker_prerequisites
 # Run Docker Compose
 echo "Setting up Docker containers..."
 cd "$INSTALL_DIR"
+if ! sudo docker-compose -f Docker.yml config > /dev/null 2>&1; then
+    echo "Error: Docker.yml file is not a valid Docker Compose configuration."
+    echo "Please check the contents of $INSTALL_DIR/Docker.yml for any syntax errors."
+    echo "Common issues include missing colons after keys or incorrect indentation."
+    exit 1
+fi
+
 sudo docker-compose -f Docker.yml up -d
 
 # Run the other scripts
