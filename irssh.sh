@@ -1,66 +1,55 @@
 #!/bin/bash
 
-# Define installation directory
-INSTALL_DIR="/opt/vpn-management-system"
-
-# Create the installation directory if it doesn't exist
-mkdir -p $INSTALL_DIR
-
-# Function to download scripts
-download_script() {
-    local repo_url=$1
-    local output_file=$2
-    echo "Downloading $output_file..."
-    wget $repo_url -O $output_file
-    if [[ $? -ne 0 ]]; then
-        echo "Error downloading $output_file. Please check the repository link."
-        exit 1
-    fi
-    chmod +x $output_file
-    echo "$output_file downloaded and made executable."
+# Function to check and install Docker if it's not installed
+install_docker() {
+  if ! command -v docker &> /dev/null; then
+    echo "Docker not found. Installing Docker..."
+    apt-get update
+    apt-get install -y docker.io
+  else
+    echo "Docker is already installed."
+  fi
 }
 
-# 1. Download Docker script
-docker_repo_url="https://raw.githubusercontent.com/irkids/IrSSH/refs/heads/main/Docker.yml"
-download_script $docker_repo_url "$INSTALL_DIR/Docker.yml"
+# Function to check and install Docker Compose if it's not installed
+install_docker_compose() {
+  if ! command -v docker-compose &> /dev/null; then
+    echo "Docker Compose not found. Installing Docker Compose..."
+    curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    chmod +x /usr/local/bin/docker-compose
+  else
+    echo "Docker Compose is already installed."
+  fi
+}
 
-# 2. Download VPN protocol installation menu script
-menu_repo_url="https://raw.githubusercontent.com/irkids/IrSSH/refs/heads/main/menu.sh"
-download_script $menu_repo_url "$INSTALL_DIR/menu.sh"
+# Download necessary files
+echo "Downloading /opt/vpn-management-system/Docker.yml..."
+repo_url="https://raw.githubusercontent.com/irkids/IrSSH/refs/heads/main/Docker.yml"
+wget $repo_url -O /opt/vpn-management-system/Docker.yml
 
-# 3. Download Web-based UI management script
-ui_repo_url="https://raw.githubusercontent.com/irkids/IrSSH/refs/heads/main/installIu.sh"
-download_script $ui_repo_url "$INSTALL_DIR/installIu.sh"
+echo "Downloading /opt/vpn-management-system/menu.sh..."
+repo_url="https://raw.githubusercontent.com/irkids/IrSSH/refs/heads/main/menu.sh"
+wget $repo_url -O /opt/vpn-management-system/menu.sh
+chmod +x /opt/vpn-management-system/menu.sh
 
-# Run Docker setup (if Docker.yml script is executable)
-echo "Running Docker setup..."
-cd $INSTALL_DIR
-./Docker.yml
-if [[ $? -ne 0 ]]; then
-    echo "Error running Docker setup. Please check the Docker.yml script."
-    exit 1
-fi
+echo "Downloading /opt/vpn-management-system/installIu.sh..."
+repo_url="https://raw.githubusercontent.com/irkids/IrSSH/refs/heads/main/installIu.sh"
+wget $repo_url -O /opt/vpn-management-system/installIu.sh
+chmod +x /opt/vpn-management-system/installIu.sh
 
-# Run VPN protocol installation menu script
-echo "Running VPN protocol installation menu..."
-./menu.sh
-if [[ $? -ne 0 ]]; then
-    echo "Error running VPN installation menu script."
-    exit 1
-fi
+# Install Docker and Docker Compose
+install_docker
+install_docker_compose
 
-# Run web-based UI management script
-echo "Running Web-based UI setup..."
-./installIu.sh
-if [[ $? -ne 0 ]]; then
-    echo "Error running Web-based UI setup."
-    exit 1
-fi
+# Run Docker Compose using the Docker.yml file
+echo "Running Docker Compose setup..."
+docker-compose -f /opt/vpn-management-system/Docker.yml up -d
 
-echo "All scripts have been successfully installed and executed."
+# Continue with the rest of your setup...
+echo "Running menu setup..."
+/opt/vpn-management-system/menu.sh
 
-# Provide final instructions or messages
-echo "VPN Management System and Web-based UI are successfully installed."
-echo "Please navigate to your server's IP address to access the Web-based UI."
+echo "Running UI installer..."
+/opt/vpn-management-system/installIu.sh
 
-exit 0
+echo "Setup complete."
